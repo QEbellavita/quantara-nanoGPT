@@ -58,3 +58,57 @@ class TestGPTEmbedding:
         emb2 = small_gpt.get_embedding(idx2)
 
         assert not torch.allclose(emb1, emb2)
+
+
+class TestBiometricEncoder:
+    """Test biometric signal encoding."""
+
+    @pytest.fixture
+    def encoder(self):
+        from emotion_classifier import BiometricEncoder
+        return BiometricEncoder()
+
+    def test_encoder_output_shape(self, encoder):
+        """Output should be (batch, 16)."""
+        biometrics = {
+            'heart_rate': 80.0,
+            'hrv': 50.0,
+            'eda': 3.0
+        }
+
+        output = encoder.encode(biometrics)
+
+        assert output.shape == (1, 16)
+
+    def test_encoder_handles_missing_values(self, encoder):
+        """Missing biometrics should default to neutral."""
+        biometrics = {'heart_rate': 80.0}  # missing hrv, eda
+
+        output = encoder.encode(biometrics)
+
+        assert output.shape == (1, 16)
+        assert not torch.isnan(output).any()
+
+    def test_encoder_handles_empty_dict(self, encoder):
+        """Empty biometrics should return neutral encoding."""
+        output = encoder.encode({})
+
+        assert output.shape == (1, 16)
+        assert not torch.isnan(output).any()
+
+    def test_encoder_handles_none(self, encoder):
+        """None should return neutral encoding."""
+        output = encoder.encode(None)
+
+        assert output.shape == (1, 16)
+
+    def test_encoder_batch_processing(self, encoder):
+        """Should handle batch of biometrics."""
+        batch = [
+            {'heart_rate': 80.0, 'hrv': 50.0, 'eda': 3.0},
+            {'heart_rate': 100.0, 'hrv': 30.0, 'eda': 7.0},
+        ]
+
+        output = encoder.encode_batch(batch)
+
+        assert output.shape == (2, 16)
