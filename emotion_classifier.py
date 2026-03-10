@@ -116,3 +116,81 @@ class BiometricEncoder(nn.Module):
     def forward(self, features: torch.Tensor) -> torch.Tensor:
         """Forward pass for training."""
         return self.encoder(features)
+
+
+class FusionHead(nn.Module):
+    """
+    Multimodal fusion classification head.
+
+    Concatenates text and biometric embeddings, then classifies
+    into emotion categories via 2-layer MLP.
+    """
+
+    EMOTIONS = ['sadness', 'joy', 'love', 'anger', 'fear', 'surprise', 'neutral']
+
+    def __init__(
+        self,
+        text_dim: int = 512,
+        biometric_dim: int = 16,
+        hidden_dim: int = 128,
+        num_emotions: int = 7,
+        dropout: float = 0.3
+    ):
+        super().__init__()
+        self.text_dim = text_dim
+        self.biometric_dim = biometric_dim
+        self.num_emotions = num_emotions
+
+        # Fusion MLP
+        self.classifier = nn.Sequential(
+            nn.Linear(text_dim + biometric_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim // 2, num_emotions),
+        )
+
+        # Zero biometric embedding for text-only mode
+        self.register_buffer(
+            'zero_biometric',
+            torch.zeros(1, biometric_dim)
+        )
+
+    def forward(
+        self,
+        text_embedding: torch.Tensor,
+        biometric_embedding: torch.Tensor = None
+    ) -> torch.Tensor:
+        """
+        Forward pass.
+
+        Args:
+            text_embedding: (batch, text_dim) from GPT
+            biometric_embedding: (batch, biometric_dim) or None
+
+        Returns:
+            (batch, num_emotions) probability distribution
+        """
+        batch_size = text_embedding.shape[0]
+
+        if biometric_embedding is None:
+            biometric_embedding = self.zero_biometric.expand(batch_size, -1)
+
+        # Concatenate embeddings
+        fused = torch.cat([text_embedding, biometric_embedding], dim=-1)
+
+        # Classify
+        logits = self.classifier(fused)
+        probs = torch.softmax(logits, dim=-1)
+
+        return probs
+
+    def get_emotion_name(self, index: int) -> str:
+        """Get emotion name from index."""
+        return self.EMOTIONS[index]
+
+    def get_emotion_index(self, name: str) -> int:
+        """Get index from emotion name."""
+        return self.EMOTIONS.index(name.lower())

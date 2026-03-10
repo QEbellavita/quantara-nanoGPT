@@ -112,3 +112,50 @@ class TestBiometricEncoder:
         output = encoder.encode_batch(batch)
 
         assert output.shape == (2, 16)
+
+
+class TestFusionHead:
+    """Test fusion classification head."""
+
+    @pytest.fixture
+    def fusion_head(self):
+        from emotion_classifier import FusionHead
+        return FusionHead(text_dim=512, biometric_dim=16, num_emotions=7)
+
+    def test_output_shape(self, fusion_head):
+        """Output should be (batch, num_emotions)."""
+        text_emb = torch.randn(2, 512)
+        bio_emb = torch.randn(2, 16)
+
+        output = fusion_head(text_emb, bio_emb)
+
+        assert output.shape == (2, 7)
+
+    def test_output_is_probability_distribution(self, fusion_head):
+        """Output should sum to 1 (softmax)."""
+        text_emb = torch.randn(1, 512)
+        bio_emb = torch.randn(1, 16)
+
+        output = fusion_head(text_emb, bio_emb)
+
+        assert torch.isclose(output.sum(), torch.tensor(1.0), atol=1e-5)
+
+    def test_text_only_mode(self, fusion_head):
+        """Should work with None biometrics."""
+        text_emb = torch.randn(1, 512)
+
+        output = fusion_head(text_emb, None)
+
+        assert output.shape == (1, 7)
+        assert torch.isclose(output.sum(), torch.tensor(1.0), atol=1e-5)
+
+    def test_different_inputs_different_outputs(self, fusion_head):
+        """Different embeddings should produce different predictions."""
+        text1 = torch.randn(1, 512)
+        text2 = torch.randn(1, 512)
+        bio = torch.randn(1, 16)
+
+        out1 = fusion_head(text1, bio)
+        out2 = fusion_head(text2, bio)
+
+        assert not torch.allclose(out1, out2)
