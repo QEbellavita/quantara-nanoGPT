@@ -222,22 +222,71 @@ class EmotionGPTModel:
             'status': 'success'
         }
 
+    # Fast empathetic responses for instant feedback
+    FAST_RESPONSES = {
+        'joy': [
+            "It's wonderful to hear you're feeling joyful! This positive energy is precious - savor it.",
+            "Your happiness is radiating through your words. What's bringing you this joy today?",
+            "Feeling joyful is a gift. Take a moment to really embrace this feeling.",
+        ],
+        'sadness': [
+            "I hear you, and it's okay to feel sad. Your feelings are valid and I'm here with you.",
+            "Sadness can feel heavy. Remember, it's okay to take things one moment at a time.",
+            "I'm sorry you're going through this. Would you like to talk more about what's on your mind?",
+        ],
+        'anger': [
+            "I can sense your frustration. It's natural to feel angry sometimes - your feelings matter.",
+            "Anger often signals that something important to us has been crossed. What's behind this feeling?",
+            "Take a deep breath. Your anger is valid, and we can work through this together.",
+        ],
+        'fear': [
+            "Feeling anxious or worried is completely understandable. You're not alone in this.",
+            "Fear can be overwhelming. Let's take this one step at a time together.",
+            "I hear your concerns. Sometimes naming our fears helps diminish their power.",
+        ],
+        'neutral': [
+            "I'm here to listen. How can I support you today?",
+            "Thank you for sharing. What's on your mind right now?",
+            "I'm here whenever you need to talk. What would be most helpful for you?",
+        ],
+        'love': [
+            "Love is such a beautiful emotion. It's wonderful that you're experiencing this connection.",
+            "The warmth in your words is touching. Love enriches our lives in so many ways.",
+            "Feeling loved and giving love are among life's greatest gifts.",
+        ],
+        'surprise': [
+            "That sounds unexpected! How are you processing this surprise?",
+            "Life can certainly catch us off guard. How are you feeling about this?",
+            "Surprises can be exciting or unsettling. I'm here to help you work through it.",
+        ],
+    }
+
     def coach(
         self,
         message: str,
         emotion: str = None,
-        biometric_data: dict = None
+        biometric_data: dict = None,
+        use_model: bool = False
     ) -> dict:
-        """Generate empathetic coaching response"""
+        """Generate empathetic coaching response (fast mode by default)"""
+        import random
 
         # Auto-detect emotion if not provided
         if not emotion:
             analysis = self.analyze(message)
             emotion = analysis['dominant_emotion']
 
-        # Generate empathetic response
-        prompt = f"<empathy>User feels: {emotion} | Message: {message} | Response:"
-        result = self.generate(prompt, max_tokens=200, temperature=0.7)
+        # Get pre-written responses for this emotion
+        responses = self.FAST_RESPONSES.get(emotion, self.FAST_RESPONSES['neutral'])
+
+        # Fast mode: use pre-written empathetic responses (default)
+        if not use_model:
+            response = random.choice(responses)
+        else:
+            # Model mode: generate with reduced tokens for speed
+            prompt = f"<empathy>User feels: {emotion} | Message: {message} | Response:"
+            result = self.generate(prompt, max_tokens=75, temperature=0.7)
+            response = result.get('response', random.choice(responses))
 
         # Add biometric insight if available
         biometric_insight = None
@@ -253,7 +302,7 @@ class EmotionGPTModel:
                 biometric_insight = "Your low heart rate combined with mood may indicate low energy. Gentle movement could help."
 
         return {
-            'response': result['response'],
+            'response': response,
             'detected_emotion': emotion,
             'biometric_insight': biometric_insight,
             'user_message': message,
@@ -404,6 +453,7 @@ def create_app(model: EmotionGPTModel) -> Flask:
         {
             "message": "I've been feeling overwhelmed",
             "emotion": "sadness",  // optional, auto-detected if missing
+            "use_model": false,  // optional, use fast responses by default
             "biometric": {  // optional
                 "heart_rate": 85,
                 "hrv": 45
@@ -420,7 +470,8 @@ def create_app(model: EmotionGPTModel) -> Flask:
             result = model.coach(
                 message=message,
                 emotion=data.get('emotion'),
-                biometric_data=data.get('biometric')
+                biometric_data=data.get('biometric'),
+                use_model=data.get('use_model', False)
             )
 
             return jsonify({**result, 'status': 'success'})
