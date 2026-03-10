@@ -211,9 +211,11 @@ def train(args):
     val_emotions = [e for _, e in val_data]
     val_embeddings = extract_embeddings(gpt, val_texts, encode_fn, device)
 
+    # Initialize models first
+    bio_encoder = BiometricEncoder(output_dim=16).to(device)
+
     # Generate synthetic biometrics
     print("\n  Generating synthetic biometrics...")
-    bio_encoder = BiometricEncoder(output_dim=16)
 
     train_bio_features = []
     for emotion in train_emotions:
@@ -239,9 +241,6 @@ def train(args):
 
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size)
-
-    # Initialize models
-    bio_encoder = BiometricEncoder(output_dim=16).to(device)
     fusion_head = FusionHead(
         text_dim=n_embd,
         biometric_dim=16,
@@ -253,7 +252,7 @@ def train(args):
     # Optimizer
     params = list(bio_encoder.parameters()) + list(fusion_head.parameters())
     optimizer = torch.optim.AdamW(params, lr=args.lr, weight_decay=0.01)
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.NLLLoss()
 
     # Training loop
     print("\n  Training...")
@@ -341,7 +340,7 @@ def train(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Train emotion classifier')
     parser.add_argument('--gpt-checkpoint', default='out-quantara-emotion/ckpt.pt')
-    parser.add_argument('--data-dir', default='/Users/bel/Downloads')
+    parser.add_argument('--data-dir', default='.')
     parser.add_argument('--epochs', type=int, default=20)
     parser.add_argument('--batch-size', type=int, default=64)
     parser.add_argument('--lr', type=float, default=1e-3)
