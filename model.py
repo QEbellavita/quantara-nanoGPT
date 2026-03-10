@@ -328,3 +328,32 @@ class GPT(nn.Module):
             idx = torch.cat((idx, idx_next), dim=1)
 
         return idx
+
+    def get_embedding(self, idx):
+        """
+        Extract pooled embedding from input tokens.
+
+        Args:
+            idx: (batch, seq_len) tensor of token indices
+
+        Returns:
+            (batch, n_embd) tensor of mean-pooled embeddings
+        """
+        device = idx.device
+        b, t = idx.shape
+        assert t <= self.config.block_size, f"Sequence length {t} exceeds block size {self.config.block_size}"
+
+        pos = torch.arange(0, t, dtype=torch.long, device=device)
+
+        tok_emb = self.transformer.wte(idx)
+        pos_emb = self.transformer.wpe(pos)
+        x = self.transformer.drop(tok_emb + pos_emb)
+
+        for block in self.transformer.h:
+            x = block(x)
+
+        x = self.transformer.ln_f(x)
+
+        # Mean pooling over sequence dimension
+        embedding = x.mean(dim=1)
+        return embedding
