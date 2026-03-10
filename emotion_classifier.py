@@ -16,6 +16,9 @@ Integrates with:
 import torch
 import torch.nn as nn
 import numpy as np
+import pickle
+import time
+from pathlib import Path
 
 
 class BiometricEncoder(nn.Module):
@@ -194,3 +197,213 @@ class FusionHead(nn.Module):
     def get_emotion_index(self, name: str) -> int:
         """Get index from emotion name."""
         return self.EMOTIONS.index(name.lower())
+
+
+class MultimodalEmotionAnalyzer:
+    """
+    Main interface for multimodal emotion analysis.
+
+    Combines nanoGPT text embeddings with biometric signals
+    for accurate emotion classification.
+
+    Connected to:
+    - Neural Workflow AI Engine
+    - AI Conversational Coach
+    - Biometric Integration Engine
+    """
+
+    def __init__(
+        self,
+        gpt_checkpoint: str = None,
+        classifier_checkpoint: str = None,
+        device: str = 'auto'
+    ):
+        self.device = self._detect_device(device)
+
+        # Load or create GPT model
+        if gpt_checkpoint and Path(gpt_checkpoint).exists():
+            self._load_gpt(gpt_checkpoint)
+        else:
+            self._create_dummy_gpt()
+
+        # Initialize biometric encoder
+        self.biometric_encoder = BiometricEncoder(output_dim=16)
+        self.biometric_encoder.to(self.device)
+
+        # Load or create fusion head
+        self.fusion_head = FusionHead(
+            text_dim=self.n_embd,
+            biometric_dim=16,
+            num_emotions=7
+        )
+
+        if classifier_checkpoint and Path(classifier_checkpoint).exists():
+            state = torch.load(classifier_checkpoint, map_location=self.device)
+            self.fusion_head.load_state_dict(state['fusion_head'])
+            self.biometric_encoder.load_state_dict(state['biometric_encoder'])
+
+        self.fusion_head.to(self.device)
+        self.fusion_head.eval()
+
+        # Setup tokenizer
+        self._setup_tokenizer()
+
+    def _detect_device(self, device: str) -> str:
+        if device == 'auto':
+            if torch.cuda.is_available():
+                return 'cuda'
+            elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+                return 'mps'
+            return 'cpu'
+        return device
+
+    def _load_gpt(self, checkpoint_path: str):
+        """Load trained GPT model."""
+        from model import GPT, GPTConfig
+
+        checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
+
+        gptconf = GPTConfig(**checkpoint['model_args'])
+        self.gpt = GPT(gptconf)
+        self.n_embd = gptconf.n_embd
+
+        state_dict = checkpoint['model']
+        unwanted_prefix = '_orig_mod.'
+        for k in list(state_dict.keys()):
+            if k.startswith(unwanted_prefix):
+                state_dict[k[len(unwanted_prefix):]] = state_dict.pop(k)
+
+        self.gpt.load_state_dict(state_dict)
+        self.gpt.eval()
+        self.gpt.to(self.device)
+
+    def _create_dummy_gpt(self):
+        """Create a small GPT for testing without checkpoint."""
+        from model import GPT, GPTConfig
+
+        config = GPTConfig(
+            block_size=256,
+            vocab_size=256,
+            n_layer=2,
+            n_head=2,
+            n_embd=64,
+            dropout=0.0,
+            bias=True
+        )
+        self.gpt = GPT(config)
+        self.gpt.eval()
+        self.gpt.to(self.device)
+        self.n_embd = 64
+
+        # Adjust fusion head for smaller embedding
+        self.fusion_head = FusionHead(
+            text_dim=64,
+            biometric_dim=16,
+            num_emotions=7
+        )
+
+    def _setup_tokenizer(self):
+        """Setup tokenizer (char-level or BPE)."""
+        meta_path = Path('data/quantara_emotion/meta.pkl')
+
+        if meta_path.exists():
+            with open(meta_path, 'rb') as f:
+                meta = pickle.load(f)
+            stoi, itos = meta['stoi'], meta['itos']
+            self.encode = lambda s: [stoi.get(c, 0) for c in s]
+        else:
+            # Fallback: simple ASCII encoding compatible with vocab_size=256
+            self.encode = lambda s: [ord(c) % 256 for c in s]
+
+    def _get_text_embedding(self, text: str) -> torch.Tensor:
+        """Extract embedding from text."""
+        if not text:
+            text = " "  # Avoid empty tensor
+
+        tokens = self.encode(text)
+        # Truncate to block size
+        max_len = min(len(tokens), self.gpt.config.block_size)
+        tokens = tokens[:max_len]
+
+        idx = torch.tensor(tokens, dtype=torch.long, device=self.device).unsqueeze(0)
+
+        with torch.no_grad():
+            embedding = self.gpt.get_embedding(idx)
+
+        return embedding
+
+    def analyze(
+        self,
+        text: str,
+        biometrics: dict = None,
+        return_embedding: bool = False
+    ) -> dict:
+        """
+        Analyze emotional content of text with optional biometrics.
+
+        Args:
+            text: Input text to analyze
+            biometrics: Optional dict with heart_rate, hrv, eda
+            return_embedding: If True, include raw embedding in result
+
+        Returns:
+            Dict with emotion scores, dominant emotion, confidence
+        """
+        start_time = time.time()
+
+        # Get text embedding
+        text_embedding = self._get_text_embedding(text)
+
+        # Get biometric embedding
+        if biometrics:
+            bio_embedding = self.biometric_encoder.encode(biometrics).to(self.device)
+            biometric_contribution = 0.3  # Placeholder - could be learned
+        else:
+            bio_embedding = None
+            biometric_contribution = 0.0
+
+        # Classify
+        with torch.no_grad():
+            probs = self.fusion_head(text_embedding, bio_embedding)
+
+        probs = probs.squeeze(0).cpu().numpy()
+
+        # Build result
+        scores = {
+            emotion: float(probs[i])
+            for i, emotion in enumerate(FusionHead.EMOTIONS)
+        }
+
+        dominant_idx = int(np.argmax(probs))
+        dominant_emotion = FusionHead.EMOTIONS[dominant_idx]
+        confidence = float(probs[dominant_idx])
+
+        latency_ms = (time.time() - start_time) * 1000
+
+        result = {
+            'dominant_emotion': dominant_emotion,
+            'confidence': confidence,
+            'scores': scores,
+            'biometric_contribution': biometric_contribution,
+            'latency_ms': round(latency_ms, 2),
+            'status': 'success'
+        }
+
+        if return_embedding:
+            result['embedding'] = text_embedding.squeeze(0).cpu().numpy().tolist()
+
+        return result
+
+    def analyze_batch(
+        self,
+        texts: list,
+        biometrics_list: list = None
+    ) -> list:
+        """Analyze batch of texts."""
+        if biometrics_list is None:
+            biometrics_list = [None] * len(texts)
+
+        return [
+            self.analyze(text, bio)
+            for text, bio in zip(texts, biometrics_list)
+        ]

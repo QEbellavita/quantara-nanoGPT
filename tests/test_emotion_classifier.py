@@ -159,3 +159,54 @@ class TestFusionHead:
         out2 = fusion_head(text2, bio)
 
         assert not torch.allclose(out1, out2)
+
+
+class TestMultimodalEmotionAnalyzer:
+    """Test the main analyzer interface."""
+
+    @pytest.fixture
+    def mock_analyzer(self):
+        """Create analyzer with randomly initialized weights (no checkpoint)."""
+        from emotion_classifier import MultimodalEmotionAnalyzer
+        return MultimodalEmotionAnalyzer(
+            gpt_checkpoint=None,  # Will create random model
+            classifier_checkpoint=None,
+            device='cpu'
+        )
+
+    def test_analyze_returns_required_fields(self, mock_analyzer):
+        """Analysis result should have all required fields."""
+        result = mock_analyzer.analyze("I feel happy today")
+
+        assert 'dominant_emotion' in result
+        assert 'confidence' in result
+        assert 'scores' in result
+        assert len(result['scores']) == 7
+
+    def test_analyze_with_biometrics(self, mock_analyzer):
+        """Should accept biometric data."""
+        biometrics = {'heart_rate': 90, 'hrv': 40, 'eda': 5.0}
+        result = mock_analyzer.analyze("I feel anxious", biometrics=biometrics)
+
+        assert 'dominant_emotion' in result
+        assert 'biometric_contribution' in result
+
+    def test_scores_sum_to_one(self, mock_analyzer):
+        """Emotion scores should sum to 1."""
+        result = mock_analyzer.analyze("Test text")
+
+        total = sum(result['scores'].values())
+        assert abs(total - 1.0) < 1e-5
+
+    def test_confidence_matches_dominant_score(self, mock_analyzer):
+        """Confidence should equal the dominant emotion's score."""
+        result = mock_analyzer.analyze("I am so excited!")
+
+        dominant = result['dominant_emotion']
+        assert result['confidence'] == result['scores'][dominant]
+
+    def test_empty_text_handled(self, mock_analyzer):
+        """Empty text should not crash."""
+        result = mock_analyzer.analyze("")
+
+        assert 'dominant_emotion' in result
