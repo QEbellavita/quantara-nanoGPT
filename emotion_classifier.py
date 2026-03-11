@@ -303,7 +303,7 @@ class MultimodalEmotionAnalyzer:
         )
 
     def _setup_tokenizer(self):
-        """Setup tokenizer (char-level or BPE)."""
+        """Setup tokenizer (char-level or BPE) - must match training tokenizer."""
         meta_path = Path('data/quantara_emotion/meta.pkl')
 
         if meta_path.exists():
@@ -312,8 +312,10 @@ class MultimodalEmotionAnalyzer:
             stoi, itos = meta['stoi'], meta['itos']
             self.encode = lambda s: [stoi.get(c, 0) for c in s]
         else:
-            # Fallback: simple ASCII encoding compatible with vocab_size=256
-            self.encode = lambda s: [ord(c) % 256 for c in s]
+            # Use BPE tokenizer (must match training script)
+            import tiktoken
+            enc = tiktoken.get_encoding("gpt2")
+            self.encode = lambda s: enc.encode(s, allowed_special={"<|endoftext|>"})
 
     def _get_text_embedding(self, text: str) -> torch.Tensor:
         """Extract embedding from text."""
