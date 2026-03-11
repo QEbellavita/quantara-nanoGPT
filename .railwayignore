@@ -1,0 +1,17 @@
+# Ignore large model checkpoints (will be downloaded on startup)
+out-*/
+checkpoints/
+*.pt
+
+# Ignore local files
+.coverage
+*.log
+__pycache__/
+*.pyc
+.env
+.DS_Store
+
+# Data files
+data/
+*.csv
+*.txt

@@ -588,7 +588,13 @@ def main():
 def get_app():
     """Create app for WSGI deployment (gunicorn)"""
     import os
-    checkpoint = os.environ.get('CHECKPOINT_PATH', 'out-quantara-emotion-fast/ckpt.pt')
+    from download_model import download_model
+
+    # Download model if not present (for Railway deployment)
+    checkpoint = download_model()
+    if checkpoint is None:
+        checkpoint = os.environ.get('CHECKPOINT_PATH', 'out-quantara-emotion-fast/ckpt.pt')
+
     device = os.environ.get('DEVICE', 'cpu')
 
     print(f"[EmotionGPT] Initializing for WSGI deployment")
