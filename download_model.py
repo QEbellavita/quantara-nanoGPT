@@ -7,7 +7,7 @@ from pathlib import Path
 
 MODEL_URL = os.environ.get(
     'MODEL_URL',
-    'https://github.com/QEbellavita/quantara-nanoGPT/releases/download/v1.0/ckpt.pt'
+    'https://github.com/QEbellavita/quantara-nanoGPT/releases/download/v1.0.0/ckpt.pt'
 )
 MODEL_DIR = Path('out-quantara-emotion-fast')
 MODEL_PATH = MODEL_DIR / 'ckpt.pt'
