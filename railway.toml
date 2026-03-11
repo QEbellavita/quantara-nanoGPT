@@ -1,0 +1,9 @@
+[build]
+builder = "nixpacks"
+
+[deploy]
+startCommand = "gunicorn emotion_api_server:app --bind 0.0.0.0:$PORT --workers 1 --timeout 120"
+healthcheckPath = "/api/emotion/status"
+healthcheckTimeout = 300
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 3

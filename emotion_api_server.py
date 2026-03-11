@@ -584,5 +584,22 @@ def main():
     app.run(host=args.host, port=args.port, debug=args.debug)
 
 
+# Module-level app for gunicorn/Railway deployment
+def get_app():
+    """Create app for WSGI deployment (gunicorn)"""
+    import os
+    checkpoint = os.environ.get('CHECKPOINT_PATH', 'out-quantara-emotion-fast/ckpt.pt')
+    device = os.environ.get('DEVICE', 'cpu')
+
+    print(f"[EmotionGPT] Initializing for WSGI deployment")
+    print(f"[EmotionGPT] Checkpoint: {checkpoint}")
+    print(f"[EmotionGPT] Device: {device}")
+
+    model = EmotionGPTModel(checkpoint_path=checkpoint, device=device)
+    return create_app(model)
+
+# Create app at module level for gunicorn
+app = get_app()
+
 if __name__ == '__main__':
     main()
