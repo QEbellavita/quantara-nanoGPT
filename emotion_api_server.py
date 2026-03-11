@@ -545,7 +545,7 @@ def create_app(model: EmotionGPTModel) -> Flask:
 
 def main():
     parser = argparse.ArgumentParser(description='Quantara Emotion GPT API Server')
-    parser.add_argument('--checkpoint', default='out-quantara-test/ckpt.pt',
+    parser.add_argument('--checkpoint', default='out-quantara-emotion-fast/ckpt.pt',
                         help='Path to model checkpoint')
     parser.add_argument('--port', type=int, default=5050, help='Server port')
     parser.add_argument('--host', default='0.0.0.0', help='Server host')

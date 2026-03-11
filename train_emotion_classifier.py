@@ -5,7 +5,12 @@ QUANTARA - Train Emotion Classifier
 ===============================================================================
 Train the fusion head on emotion-labeled text data with synthetic biometrics.
 
+Supports two embedding modes:
+  --use-sentence-transformer  Use sentence-transformers (recommended, 384-dim)
+  --gpt-checkpoint           Use nanoGPT character-level embeddings
+
 Usage:
+    python train_emotion_classifier.py --use-sentence-transformer
     python train_emotion_classifier.py --gpt-checkpoint out-quantara-emotion/ckpt.pt
 ===============================================================================
 """
@@ -25,8 +30,20 @@ from torch.utils.data import Dataset, DataLoader
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from model import GPT, GPTConfig
 from emotion_classifier import BiometricEncoder, FusionHead
+
+# Optional imports
+try:
+    from sentence_transformers import SentenceTransformer
+    HAS_SENTENCE_TRANSFORMERS = True
+except ImportError:
+    HAS_SENTENCE_TRANSFORMERS = False
+
+try:
+    from model import GPT, GPTConfig
+    HAS_NANOGPT = True
+except ImportError:
+    HAS_NANOGPT = False
 
 
 # Synthetic biometric ranges per emotion
@@ -110,8 +127,20 @@ def load_emotion_data(downloads_dir: Path):
     return all_data
 
 
-def extract_embeddings(gpt, texts, encode_fn, device, batch_size=32):
-    """Extract embeddings for all texts."""
+def extract_embeddings_sentence_transformer(model, texts, batch_size=64):
+    """Extract embeddings using sentence-transformers (recommended)."""
+    print(f"  Using sentence-transformers ({model.get_sentence_embedding_dimension()}-dim)")
+    embeddings = model.encode(
+        texts,
+        batch_size=batch_size,
+        show_progress_bar=True,
+        convert_to_numpy=True
+    )
+    return embeddings
+
+
+def extract_embeddings_gpt(gpt, texts, encode_fn, device, batch_size=32):
+    """Extract embeddings using nanoGPT (fallback)."""
     embeddings = []
 
     gpt.eval()
@@ -153,38 +182,58 @@ def train(args):
 
     print(f"\n  Device: {device}")
 
-    # Load GPT model
-    print(f"\n  Loading GPT from {args.gpt_checkpoint}...")
-    checkpoint = torch.load(args.gpt_checkpoint, map_location=device, weights_only=False)
-    gptconf = GPTConfig(**checkpoint['model_args'])
-    gpt = GPT(gptconf)
+    # Choose embedding mode
+    use_sentence_transformer = args.use_sentence_transformer
+    sentence_model = None
+    gpt = None
+    encode_fn = None
 
-    state_dict = checkpoint['model']
-    unwanted_prefix = '_orig_mod.'
-    for k in list(state_dict.keys()):
-        if k.startswith(unwanted_prefix):
-            state_dict[k[len(unwanted_prefix):]] = state_dict.pop(k)
+    if use_sentence_transformer:
+        if not HAS_SENTENCE_TRANSFORMERS:
+            print("  [!] sentence-transformers not installed, falling back to nanoGPT")
+            use_sentence_transformer = False
+        else:
+            print(f"\n  Loading sentence-transformer ({args.sentence_model})...")
+            sentence_model = SentenceTransformer(args.sentence_model, device=device)
+            n_embd = sentence_model.get_sentence_embedding_dimension()
+            print(f"  Embedding dim: {n_embd}")
 
-    gpt.load_state_dict(state_dict)
-    gpt.eval()
-    gpt.to(device)
+    if not use_sentence_transformer:
+        if not HAS_NANOGPT:
+            raise RuntimeError("Neither sentence-transformers nor nanoGPT available")
 
-    n_embd = gptconf.n_embd
-    print(f"  GPT embedding dim: {n_embd}")
+        # Load GPT model
+        print(f"\n  Loading GPT from {args.gpt_checkpoint}...")
+        checkpoint = torch.load(args.gpt_checkpoint, map_location=device, weights_only=False)
+        gptconf = GPTConfig(**checkpoint['model_args'])
+        gpt = GPT(gptconf)
 
-    # Setup tokenizer
-    meta_path = Path('data/quantara_emotion/meta.pkl')
-    if meta_path.exists():
-        with open(meta_path, 'rb') as f:
-            meta = pickle.load(f)
-        stoi = meta['stoi']
-        encode_fn = lambda s: [stoi.get(c, 0) for c in s]
-        print("  Using character-level tokenizer")
-    else:
-        import tiktoken
-        enc = tiktoken.get_encoding("gpt2")
-        encode_fn = lambda s: enc.encode(s, allowed_special={"<|endoftext|>"})
-        print("  Using GPT-2 BPE tokenizer")
+        state_dict = checkpoint['model']
+        unwanted_prefix = '_orig_mod.'
+        for k in list(state_dict.keys()):
+            if k.startswith(unwanted_prefix):
+                state_dict[k[len(unwanted_prefix):]] = state_dict.pop(k)
+
+        gpt.load_state_dict(state_dict)
+        gpt.eval()
+        gpt.to(device)
+
+        n_embd = gptconf.n_embd
+        print(f"  GPT embedding dim: {n_embd}")
+
+        # Setup tokenizer
+        meta_path = Path('data/quantara_emotion/meta.pkl')
+        if meta_path.exists():
+            with open(meta_path, 'rb') as f:
+                meta = pickle.load(f)
+            stoi = meta['stoi']
+            encode_fn = lambda s: [stoi.get(c, 0) for c in s]
+            print("  Using character-level tokenizer")
+        else:
+            import tiktoken
+            enc = tiktoken.get_encoding("gpt2")
+            encode_fn = lambda s: enc.encode(s, allowed_special={"<|endoftext|>"})
+            print("  Using GPT-2 BPE tokenizer")
 
     # Load emotion data
     print(f"\n  Loading emotion data from {args.data_dir}...")
@@ -205,11 +254,15 @@ def train(args):
     print("\n  Extracting text embeddings...")
     train_texts = [t for t, _ in train_data]
     train_emotions = [e for _, e in train_data]
-    train_embeddings = extract_embeddings(gpt, train_texts, encode_fn, device)
-
     val_texts = [t for t, _ in val_data]
     val_emotions = [e for _, e in val_data]
-    val_embeddings = extract_embeddings(gpt, val_texts, encode_fn, device)
+
+    if use_sentence_transformer:
+        train_embeddings = extract_embeddings_sentence_transformer(sentence_model, train_texts)
+        val_embeddings = extract_embeddings_sentence_transformer(sentence_model, val_texts)
+    else:
+        train_embeddings = extract_embeddings_gpt(gpt, train_texts, encode_fn, device)
+        val_embeddings = extract_embeddings_gpt(gpt, val_texts, encode_fn, device)
 
     # Initialize models first
     bio_encoder = BiometricEncoder(output_dim=16).to(device)
@@ -318,12 +371,16 @@ def train(args):
 
             # Save checkpoint
             os.makedirs('checkpoints', exist_ok=True)
-            torch.save({
+            checkpoint_data = {
                 'fusion_head': fusion_head.state_dict(),
                 'biometric_encoder': bio_encoder.state_dict(),
                 'n_embd': n_embd,
                 'val_acc': val_acc,
-            }, 'checkpoints/emotion_fusion_head.pt')
+                'embedding_type': 'sentence-transformer' if use_sentence_transformer else 'nanogpt',
+            }
+            if use_sentence_transformer:
+                checkpoint_data['sentence_model'] = args.sentence_model
+            torch.save(checkpoint_data, 'checkpoints/emotion_fusion_head.pt')
             print(f"    -> Saved checkpoint (val_acc={val_acc:.4f})")
         else:
             patience_counter += 1
@@ -339,7 +396,14 @@ def train(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Train emotion classifier')
-    parser.add_argument('--gpt-checkpoint', default='out-quantara-emotion/ckpt.pt')
+    # Embedding source
+    parser.add_argument('--use-sentence-transformer', action='store_true',
+                        help='Use sentence-transformers (recommended for text-only accuracy)')
+    parser.add_argument('--sentence-model', default='all-MiniLM-L6-v2',
+                        help='Sentence-transformer model name')
+    parser.add_argument('--gpt-checkpoint', default='out-quantara-emotion-fast/ckpt.pt',
+                        help='Path to nanoGPT checkpoint (if not using sentence-transformer)')
+    # Data & training
     parser.add_argument('--data-dir', default='.')
     parser.add_argument('--epochs', type=int, default=20)
     parser.add_argument('--batch-size', type=int, default=64)

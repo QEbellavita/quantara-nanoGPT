@@ -20,6 +20,40 @@ import pickle
 import time
 from pathlib import Path
 
+# Optional: sentence-transformers for better text embeddings
+try:
+    from sentence_transformers import SentenceTransformer
+    HAS_SENTENCE_TRANSFORMERS = True
+except ImportError:
+    HAS_SENTENCE_TRANSFORMERS = False
+
+
+class SentenceEncoderWrapper:
+    """
+    Wrapper for sentence-transformers providing semantic text embeddings.
+
+    Much better for emotion classification than character-level nanoGPT.
+    Uses all-MiniLM-L6-v2 (384-dim) by default.
+    """
+
+    def __init__(self, model_name: str = 'all-MiniLM-L6-v2', device: str = 'cpu'):
+        if not HAS_SENTENCE_TRANSFORMERS:
+            raise ImportError("sentence-transformers not installed. Run: pip install sentence-transformers")
+
+        self.model = SentenceTransformer(model_name, device=device)
+        self.embedding_dim = self.model.get_sentence_embedding_dimension()
+        self.device = device
+
+    def encode(self, text: str) -> torch.Tensor:
+        """Encode text to embedding tensor."""
+        embedding = self.model.encode(text, convert_to_tensor=True)
+        return embedding.unsqueeze(0)  # (1, dim)
+
+    def encode_batch(self, texts: list) -> torch.Tensor:
+        """Encode batch of texts."""
+        embeddings = self.model.encode(texts, convert_to_tensor=True)
+        return embeddings  # (batch, dim)
+
 
 class BiometricEncoder(nn.Module):
     """
@@ -203,8 +237,12 @@ class MultimodalEmotionAnalyzer:
     """
     Main interface for multimodal emotion analysis.
 
-    Combines nanoGPT text embeddings with biometric signals
+    Combines text embeddings with biometric signals
     for accurate emotion classification.
+
+    Text embedding options:
+    - sentence-transformers (recommended): Semantic embeddings, best accuracy
+    - nanoGPT: Character-level, requires biometrics for good accuracy
 
     Connected to:
     - Neural Workflow AI Engine
@@ -216,15 +254,31 @@ class MultimodalEmotionAnalyzer:
         self,
         gpt_checkpoint: str = None,
         classifier_checkpoint: str = None,
-        device: str = 'auto'
+        device: str = 'auto',
+        use_sentence_transformer: bool = True,
+        sentence_model: str = 'all-MiniLM-L6-v2'
     ):
         self.device = self._detect_device(device)
+        self.use_sentence_transformer = use_sentence_transformer and HAS_SENTENCE_TRANSFORMERS
+        self.sentence_encoder = None
 
-        # Load or create GPT model
-        if gpt_checkpoint and Path(gpt_checkpoint).exists():
-            self._load_gpt(gpt_checkpoint)
-        else:
-            self._create_dummy_gpt()
+        # Try to use sentence-transformers for better text embeddings
+        if self.use_sentence_transformer:
+            try:
+                print(f"[EmotionAnalyzer] Loading sentence-transformers ({sentence_model})...")
+                self.sentence_encoder = SentenceEncoderWrapper(sentence_model, device=self.device)
+                self.n_embd = self.sentence_encoder.embedding_dim
+                print(f"[EmotionAnalyzer] Sentence encoder loaded: {self.n_embd}-dim embeddings")
+            except Exception as e:
+                print(f"[EmotionAnalyzer] Sentence encoder failed: {e}, falling back to nanoGPT")
+                self.use_sentence_transformer = False
+
+        # Fall back to nanoGPT if sentence-transformers not available
+        if not self.use_sentence_transformer:
+            if gpt_checkpoint and Path(gpt_checkpoint).exists():
+                self._load_gpt(gpt_checkpoint)
+            else:
+                self._create_dummy_gpt()
 
         # Initialize biometric encoder
         self.biometric_encoder = BiometricEncoder(output_dim=16)
@@ -239,14 +293,21 @@ class MultimodalEmotionAnalyzer:
 
         if classifier_checkpoint and Path(classifier_checkpoint).exists():
             state = torch.load(classifier_checkpoint, map_location=self.device)
-            self.fusion_head.load_state_dict(state['fusion_head'])
-            self.biometric_encoder.load_state_dict(state['biometric_encoder'])
+            # Check if dimensions match
+            saved_text_dim = state['fusion_head']['classifier.0.weight'].shape[1] - 16
+            if saved_text_dim != self.n_embd:
+                print(f"[EmotionAnalyzer] Dimension mismatch: saved={saved_text_dim}, current={self.n_embd}")
+                print(f"[EmotionAnalyzer] Recreating fusion head with new dimensions (requires retraining)")
+            else:
+                self.fusion_head.load_state_dict(state['fusion_head'])
+                self.biometric_encoder.load_state_dict(state['biometric_encoder'])
 
         self.fusion_head.to(self.device)
         self.fusion_head.eval()
 
-        # Setup tokenizer
-        self._setup_tokenizer()
+        # Setup tokenizer (only needed for nanoGPT fallback)
+        if not self.use_sentence_transformer:
+            self._setup_tokenizer()
 
     def _detect_device(self, device: str) -> str:
         if device == 'auto':
@@ -318,10 +379,16 @@ class MultimodalEmotionAnalyzer:
             self.encode = lambda s: enc.encode(s, allowed_special={"<|endoftext|>"})
 
     def _get_text_embedding(self, text: str) -> torch.Tensor:
-        """Extract embedding from text."""
+        """Extract embedding from text using sentence-transformers or nanoGPT."""
         if not text:
             text = " "  # Avoid empty tensor
 
+        # Use sentence-transformers if available (much better for emotion)
+        if self.use_sentence_transformer and self.sentence_encoder:
+            embedding = self.sentence_encoder.encode(text)
+            return embedding.to(self.device)
+
+        # Fallback to nanoGPT character-level embeddings
         tokens = self.encode(text)
         # Truncate to block size
         max_len = min(len(tokens), self.gpt.config.block_size)
