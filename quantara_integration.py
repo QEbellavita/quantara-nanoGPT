@@ -272,9 +272,10 @@ class QuantaraEmotionGPT:
         if context:
             try:
                 from external_context import ExternalContextProvider
-                ext = ExternalContextProvider()
+                if not hasattr(self, '_context_provider'):
+                    self._context_provider = ExternalContextProvider()
                 family = self._emotion_to_family.get(detected_emotion, 'Neutral')
-                enrichment = ext.enrich_coaching(context, user_message, local_family=family)
+                enrichment = self._context_provider.enrich_coaching(context, user_message, local_family=family)
                 if enrichment.get('weather_insight'):
                     result['weather_insight'] = enrichment['weather_insight']
                 if enrichment.get('nutrition_insight'):
