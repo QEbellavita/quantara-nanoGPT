@@ -800,13 +800,26 @@ def create_app(model: EmotionGPTModel) -> Flask:
     # External context provider (weather, nutrition, sentiment)
     context_provider = ExternalContextProvider() if HAS_EXTERNAL_CONTEXT else None
 
+    # Multimodal analyzer (available even when main model is None)
+    multimodal_analyzer = model.multimodal_analyzer if model and hasattr(model, 'multimodal_analyzer') else None
+
+    def require_model():
+        """Check if model is loaded, return error response if not"""
+        if model is None:
+            return jsonify({
+                'error': 'Model unavailable',
+                'status': 'degraded',
+                'message': 'GPT model not loaded. Multimodal analysis may still be available.',
+            }), 503
+        return None
+
     @app.route('/api/emotion/status', methods=['GET'])
     def status():
         """Health check endpoint"""
         return jsonify({
-            'status': 'online',
+            'status': 'online' if model else 'degraded',
             'model': 'quantara-emotion-gpt',
-            'device': model.device,
+            'device': model.device if model else 'none',
             'timestamp': datetime.now().isoformat(),
             'version': '2.1.0',
             'taxonomy': '32-emotion / 9-family',
@@ -851,6 +864,8 @@ def create_app(model: EmotionGPTModel) -> Flask:
     @app.route('/api/emotion/generate', methods=['POST'])
     def generate():
         """Generate emotion-aware text"""
+        err = require_model()
+        if err: return err
         try:
             data = request.json or {}
             prompt = data.get('prompt', '')
@@ -873,6 +888,8 @@ def create_app(model: EmotionGPTModel) -> Flask:
     @app.route('/api/emotion/analyze', methods=['POST'])
     def analyze():
         """Analyze emotional content — returns emotion, family, confidence, is_fallback"""
+        err = require_model()
+        if err: return err
         try:
             data = request.json or {}
             text = data.get('text', '')
@@ -891,6 +908,8 @@ def create_app(model: EmotionGPTModel) -> Flask:
     @app.route('/api/emotion/coach', methods=['POST'])
     def coach():
         """Get empathetic coaching response"""
+        err = require_model()
+        if err: return err
         try:
             data = request.json or {}
             message = data.get('message', '')
@@ -915,6 +934,8 @@ def create_app(model: EmotionGPTModel) -> Flask:
     @app.route('/api/emotion/therapy', methods=['POST'])
     def therapy():
         """Get therapy technique, transition pathway, and coaching prompt"""
+        err = require_model()
+        if err: return err
         try:
             data = request.json or {}
             emotion = data.get('emotion', 'neutral')
@@ -930,6 +951,8 @@ def create_app(model: EmotionGPTModel) -> Flask:
     @app.route('/api/neural/emotion-workflow', methods=['POST'])
     def neural_workflow():
         """Neural Ecosystem workflow integration — family-aware triggers"""
+        err = require_model()
+        if err: return err
         try:
             data = request.json or {}
 
