@@ -239,6 +239,37 @@ class TestInsight:
         assert provider.get_insight() is None
 
 
+class TestPoseFeatures:
+    """Test pose feature extraction integration."""
+
+    STANDING_KEYPOINTS = [
+        [0.5, 0.1, 0.9], [0.48, 0.08, 0.9], [0.52, 0.08, 0.9],
+        [0.45, 0.1, 0.9], [0.55, 0.1, 0.9],
+        [0.4, 0.3, 0.9], [0.6, 0.3, 0.9],
+        [0.38, 0.5, 0.9], [0.62, 0.5, 0.9],
+        [0.38, 0.7, 0.9], [0.62, 0.7, 0.9],
+        [0.45, 0.6, 0.9], [0.55, 0.6, 0.9],
+        [0.45, 0.8, 0.9], [0.55, 0.8, 0.9],
+        [0.45, 1.0, 0.9], [0.55, 1.0, 0.9],
+    ]
+
+    def test_get_pose_features_with_data(self, provider):
+        provider._pose_data = {'keypoints': self.STANDING_KEYPOINTS}
+        features = provider.get_pose_features()
+        assert features is not None
+        assert len(features) == 8
+
+    def test_get_pose_features_returns_none_when_no_data(self, provider):
+        provider._pose_data = None
+        assert provider.get_pose_features() is None
+
+    def test_get_pose_features_handles_raw_list(self, provider):
+        provider._pose_data = self.STANDING_KEYPOINTS
+        features = provider.get_pose_features()
+        assert features is not None
+        assert len(features) == 8
+
+
 class TestCalibrationIntegration:
     """Test calibration model integration with RuViewProvider."""
 

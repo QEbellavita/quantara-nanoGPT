@@ -134,6 +134,14 @@ class RuViewProvider:
         except ImportError:
             logger.info("[RuViewProvider] wifi_calibration not available, using linear fallback")
 
+        # Pose feature extractor for emotion-relevant body language features
+        self._pose_extractor = None
+        try:
+            from pose_encoder import PoseFeatureExtractor
+            self._pose_extractor = PoseFeatureExtractor()
+        except ImportError:
+            logger.info("[RuViewProvider] pose_encoder not available")
+
     # ─── Connection Management ─────────────────────────────────────────
 
     def connect(self) -> bool:
@@ -379,6 +387,15 @@ class RuViewProvider:
     def get_mood_signals(self) -> list:
         """Get current mood signals derived from RuView data."""
         return list(self._mood_signals)
+
+    def get_pose_features(self) -> dict | None:
+        """Extract 8 emotion-relevant features from current pose data."""
+        if not self._pose_extractor or not self._pose_data:
+            return None
+        keypoints = self._pose_data
+        if isinstance(keypoints, dict):
+            keypoints = keypoints.get('keypoints', keypoints.get('pose'))
+        return self._pose_extractor.extract(keypoints)
 
     # ─── Internal Helpers ──────────────────────────────────────────────
 
