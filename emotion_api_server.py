@@ -803,8 +803,14 @@ def create_app(model: EmotionGPTModel) -> Flask:
             'model': 'quantara-emotion-gpt',
             'device': model.device,
             'timestamp': datetime.now().isoformat(),
-            'version': '2.0.0',
-            'taxonomy': '32-emotion / 9-family'
+            'version': '2.1.0',
+            'taxonomy': '32-emotion / 9-family',
+            'external_context': {
+                'available': HAS_EXTERNAL_CONTEXT,
+                'weather': True,
+                'nutrition': bool(os.environ.get('NUTRITIONIX_APP_ID')),
+                'sentiment': bool(os.environ.get('NLPCLOUD_API_KEY')),
+            }
         })
 
     @app.route('/api/emotion/emotions', methods=['GET'])
