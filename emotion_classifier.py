@@ -217,6 +217,7 @@ class FusionHead(nn.Module):
         self,
         text_dim: int = 512,
         biometric_dim: int = 16,
+        pose_dim: int = 16,
         hidden_dim: int = 128,
         num_emotions: int = 32,
         num_families: int = 9,
@@ -225,12 +226,13 @@ class FusionHead(nn.Module):
         super().__init__()
         self.text_dim = text_dim
         self.biometric_dim = biometric_dim
+        self.pose_dim = pose_dim
         self.num_emotions = num_emotions
         self.num_families = num_families
 
         # Shared feature extractor
         self.shared = nn.Sequential(
-            nn.Linear(text_dim + biometric_dim, hidden_dim),
+            nn.Linear(text_dim + biometric_dim + pose_dim, hidden_dim),
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(hidden_dim, hidden_dim // 2),
@@ -250,6 +252,13 @@ class FusionHead(nn.Module):
             torch.zeros(1, biometric_dim)
         )
 
+        # Zero pose embedding for when pose data is unavailable
+        if pose_dim > 0:
+            self.register_buffer(
+                'zero_pose',
+                torch.zeros(1, pose_dim)
+            )
+
         # Build family → emotion index mapping
         self._build_family_indices()
 
@@ -264,7 +273,8 @@ class FusionHead(nn.Module):
     def forward(
         self,
         text_embedding: torch.Tensor,
-        biometric_embedding: torch.Tensor = None
+        biometric_embedding: torch.Tensor = None,
+        pose_embedding: torch.Tensor = None
     ) -> tuple:
         """
         Forward pass returning both emotion and family logits.
@@ -277,7 +287,14 @@ class FusionHead(nn.Module):
         if biometric_embedding is None:
             biometric_embedding = self.zero_biometric.expand(batch_size, -1)
 
-        fused = torch.cat([text_embedding, biometric_embedding], dim=-1)
+        parts = [text_embedding, biometric_embedding]
+
+        if self.pose_dim > 0:
+            if pose_embedding is None:
+                pose_embedding = self.zero_pose.expand(batch_size, -1)
+            parts.append(pose_embedding)
+
+        fused = torch.cat(parts, dim=-1)
         shared_features = self.shared(fused)
 
         emotion_logits = self.emotion_classifier(shared_features)
@@ -292,6 +309,7 @@ class FusionHead(nn.Module):
         self,
         text_embedding: torch.Tensor,
         biometric_embedding: torch.Tensor = None,
+        pose_embedding: torch.Tensor = None,
         threshold: float = 0.6
     ) -> dict:
         """
@@ -304,7 +322,7 @@ class FusionHead(nn.Module):
         Returns:
             {emotion, family, confidence, is_fallback}
         """
-        emotion_probs, family_probs = self.forward(text_embedding, biometric_embedding)
+        emotion_probs, family_probs = self.forward(text_embedding, biometric_embedding, pose_embedding)
 
         # Squeeze batch dim for single-sample inference
         emotion_probs = emotion_probs.squeeze(0)
@@ -414,6 +432,7 @@ class MultimodalEmotionAnalyzer:
         self.fusion_head = FusionHead(
             text_dim=self.n_embd,
             biometric_dim=16,
+            pose_dim=0,
             num_emotions=32,
             num_families=9
         )
@@ -491,6 +510,7 @@ class MultimodalEmotionAnalyzer:
         self.fusion_head = FusionHead(
             text_dim=64,
             biometric_dim=16,
+            pose_dim=0,
             num_emotions=32,
             num_families=9
         )

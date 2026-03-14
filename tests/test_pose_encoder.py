@@ -141,3 +141,63 @@ class TestPoseEncoder:
         t = torch.randn(4, 8)
         out = self.encoder(t)
         assert out.shape == (4, 16)
+
+
+# ===================================================================
+# Task 9 – FusionHead with pose embedding
+# ===================================================================
+
+from emotion_classifier import FusionHead
+
+
+class TestFusionHeadPose:
+
+    def test_416_dim_forward(self):
+        """FusionHead with text=384, bio=16, pose=16 produces correct output."""
+        head = FusionHead(text_dim=384, biometric_dim=16, pose_dim=16)
+        text_emb = torch.randn(1, 384)
+        bio_emb = torch.randn(1, 16)
+        pose_emb = torch.randn(1, 16)
+        emotion_probs, family_probs = head(text_emb, bio_emb, pose_emb)
+        assert emotion_probs.shape == (1, 32)
+        assert family_probs.shape == (1, 9)
+
+    def test_416_dim_with_no_pose(self):
+        """When pose_embedding is None, zero_pose buffer is used."""
+        head = FusionHead(text_dim=384, biometric_dim=16, pose_dim=16)
+        text_emb = torch.randn(1, 384)
+        bio_emb = torch.randn(1, 16)
+        emotion_probs, family_probs = head(text_emb, bio_emb, None)
+        assert emotion_probs.shape == (1, 32)
+        assert family_probs.shape == (1, 9)
+
+    def test_classify_with_fallback_pose(self):
+        """classify_with_fallback returns emotion and family with pose."""
+        head = FusionHead(text_dim=384, biometric_dim=16, pose_dim=16)
+        text_emb = torch.randn(1, 384)
+        bio_emb = torch.randn(1, 16)
+        pose_emb = torch.randn(1, 16)
+        result = head.classify_with_fallback(text_emb, bio_emb, pose_emb)
+        assert 'emotion' in result
+        assert 'family' in result
+
+    def test_backward_compat_400_dim(self):
+        """FusionHead with pose_dim=0 works like the original 400-dim head."""
+        head = FusionHead(text_dim=384, biometric_dim=16, pose_dim=0)
+        text_emb = torch.randn(1, 384)
+        bio_emb = torch.randn(1, 16)
+        emotion_probs, family_probs = head(text_emb, bio_emb)
+        assert emotion_probs.shape == (1, 32)
+        assert family_probs.shape == (1, 9)
+        # Should NOT have zero_pose buffer
+        assert not hasattr(head, 'zero_pose')
+
+    def test_old_400_checkpoint_detected(self):
+        """Old 400-dim state_dict has different shape than new 416-dim."""
+        old_head = FusionHead(text_dim=384, biometric_dim=16, pose_dim=0)
+        new_head = FusionHead(text_dim=384, biometric_dim=16, pose_dim=16)
+        old_input_dim = old_head.state_dict()['shared.0.weight'].shape[1]
+        new_input_dim = new_head.state_dict()['shared.0.weight'].shape[1]
+        assert old_input_dim == 400
+        assert new_input_dim == 416
+        assert old_input_dim != new_input_dim
