@@ -419,6 +419,15 @@ class RuViewClient {
     }
 
     /**
+     * Get pose features from WiFi sensing
+     * Returns pose feature dict or null if unavailable
+     */
+    async getPoseFeatures() {
+        const analysis = await this.analyzeWithWiFiBiometrics('');
+        return analysis.pose_features || null;
+    }
+
+    /**
      * Analyze emotion using text + WiFi-sensed biometrics (ghost protocol)
      * @param {string} text - Text to analyze
      * @returns {Object} Emotion analysis with RuView biometric context
