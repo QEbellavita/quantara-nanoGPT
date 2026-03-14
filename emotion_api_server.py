@@ -1148,12 +1148,24 @@ def create_app(model: EmotionGPTModel) -> Flask:
             if context_provider:
                 ruview_bio = context_provider.get_ruview_biometrics()
 
+            # Get pose features from RuView
+            pose_features = None
+            if context_provider and context_provider.ruview:
+                pose_features = context_provider.ruview.get_pose_features()
+
             # Merge with any explicitly passed biometrics (explicit wins)
             biometrics = data.get('biometrics') or ruview_bio
 
-            result = multimodal_analyzer.analyze(text, biometrics=biometrics)
+            result = multimodal_analyzer.analyze(text, biometrics=biometrics, pose=pose_features)
 
             # Add RuView context
+            result['pose_features'] = pose_features
+            result['calibration_profile'] = (
+                context_provider.ruview._calibration_buffer.profile_id
+                if hasattr(context_provider.ruview, '_calibration_buffer') and context_provider.ruview._calibration_buffer
+                else 'none'
+            ) if context_provider and context_provider.ruview else 'none'
+
             if ruview_bio:
                 result['ruview_source'] = True
                 result['ruview_confidence'] = ruview_bio.get('confidence', 0)
