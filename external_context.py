@@ -75,15 +75,15 @@ class WeatherProvider:
     ) -> list:
         """Derive mood-relevant signals from weather data."""
         signals = []
-        if weather_code >= 50:
+        if (weather_code or 0) >= 50:
             signals.append('low_sunlight')
-        if humidity > 80:
+        if (humidity or 0) > 80:
             signals.append('high_humidity')
-        if temp_c < 0 or temp_c > 35:
+        if (temp_c or 0) < 0 or (temp_c or 0) > 35:
             signals.append('extreme_temp')
-        if pm2_5 > 35:
+        if (pm2_5 or 0) > 35:
             signals.append('poor_air_quality')
-        if uv_index > 7:
+        if (uv_index or 0) > 7:
             signals.append('high_uv')
         return signals
 
