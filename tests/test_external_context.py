@@ -430,3 +430,16 @@ class TestExternalContextProvider:
             'mood_signals': ['high_caffeine'],
         })
         assert 'caffeine' in insight.lower()
+
+
+class TestBackwardsCompatibility:
+    """Ensure coaching works identically without context parameter."""
+
+    def test_coach_no_context_no_new_fields(self):
+        """Coach response without context has no weather/nutrition/cross_validation fields."""
+        provider = ExternalContextProvider()
+        result = provider.enrich_coaching({}, "hello")
+
+        assert result['weather_insight'] is None
+        assert result['nutrition_insight'] is None
+        assert result['cross_validation'] is None
