@@ -24,6 +24,11 @@ Endpoints:
   GET  /api/emotion/family/<name>   - Get emotions in a specific family
   POST /api/neural/emotion-workflow - Neural workflow integration
   POST /api/neural/emotion-transition - Emotion transition pathway
+  GET  /api/ruview/status            - RuView WiFi sensing status
+  POST /api/ruview/connect           - Connect to RuView service
+  GET  /api/ruview/biometrics        - Get WiFi-sensed biometrics
+  GET  /api/ruview/presence          - Get presence/occupancy data
+  POST /api/ruview/analyze           - Emotion analysis with WiFi biometrics
 
 Start server:
   python emotion_api_server.py --port 5050
@@ -1050,6 +1055,94 @@ def create_app(model: EmotionGPTModel) -> Flask:
         except Exception as e:
             return jsonify({'error': str(e), 'status': 'error'}), 500
 
+    # ─── RuView WiFi Sensing Endpoints (Ghost Protocol) ──────────────────
+
+    @app.route('/api/ruview/status', methods=['GET'])
+    def ruview_status():
+        """Check RuView WiFi sensing connection status"""
+        if not context_provider or not context_provider.ruview:
+            return jsonify({
+                'status': 'unavailable',
+                'message': 'RuView provider not configured',
+            })
+        rv = context_provider.ruview
+        return jsonify({
+            'status': 'connected' if rv.is_connected else 'disconnected',
+            'host': rv.host,
+            'http_port': rv.http_port,
+            'ws_port': rv.ws_port,
+        })
+
+    @app.route('/api/ruview/connect', methods=['POST'])
+    def ruview_connect():
+        """Connect to RuView WiFi sensing service"""
+        if not context_provider:
+            return jsonify({'error': 'External context not available', 'status': 'error'}), 503
+        rv = context_provider.ruview
+        if not rv:
+            return jsonify({'error': 'RuView provider not available', 'status': 'error'}), 503
+        connected = rv.connect()
+        return jsonify({
+            'connected': connected,
+            'status': 'success' if connected else 'failed',
+        })
+
+    @app.route('/api/ruview/biometrics', methods=['GET'])
+    def ruview_biometrics():
+        """Get current biometrics from RuView WiFi sensing"""
+        if not context_provider:
+            return jsonify({'error': 'External context not available', 'status': 'error'}), 503
+        bio = context_provider.get_ruview_biometrics()
+        if bio is None:
+            return jsonify({'error': 'RuView data unavailable', 'status': 'error'}), 502
+        return jsonify({**bio, 'status': 'success'})
+
+    @app.route('/api/ruview/presence', methods=['GET'])
+    def ruview_presence():
+        """Get presence/occupancy from RuView WiFi sensing"""
+        if not context_provider:
+            return jsonify({'error': 'External context not available', 'status': 'error'}), 503
+        presence = context_provider.get_ruview_presence()
+        if presence is None:
+            return jsonify({'error': 'RuView data unavailable', 'status': 'error'}), 502
+        return jsonify({**presence, 'status': 'success'})
+
+    @app.route('/api/ruview/analyze', methods=['POST'])
+    def ruview_analyze():
+        """
+        Analyze emotion using text + RuView WiFi biometrics.
+        Ghost protocol: biometric data sourced from WiFi sensing, no cameras/wearables.
+        """
+        if not multimodal_analyzer:
+            return jsonify({'error': 'Multimodal analyzer not available', 'status': 'error'}), 503
+
+        try:
+            data = request.json or {}
+            text = data.get('text', '')
+
+            # Get biometrics from RuView
+            ruview_bio = None
+            if context_provider:
+                ruview_bio = context_provider.get_ruview_biometrics()
+
+            # Merge with any explicitly passed biometrics (explicit wins)
+            biometrics = data.get('biometrics') or ruview_bio
+
+            result = multimodal_analyzer.analyze(text, biometrics=biometrics)
+
+            # Add RuView context
+            if ruview_bio:
+                result['ruview_source'] = True
+                result['ruview_confidence'] = ruview_bio.get('confidence', 0)
+                result['ruview_insight'] = context_provider.ruview.get_insight() if context_provider.ruview else None
+                result['presence'] = context_provider.get_ruview_presence()
+            else:
+                result['ruview_source'] = False
+
+            return jsonify(result)
+        except Exception as e:
+            return jsonify({'error': str(e), 'status': 'error'}), 500
+
     return app
 
 
@@ -1091,6 +1184,11 @@ def main():
     print(f"  - POST /api/emotion/therapy")
     print(f"  - POST /api/neural/emotion-workflow")
     print(f"  - POST /api/neural/emotion-transition")
+    print(f"  - GET  /api/ruview/status")
+    print(f"  - POST /api/ruview/connect")
+    print(f"  - GET  /api/ruview/biometrics")
+    print(f"  - GET  /api/ruview/presence")
+    print(f"  - POST /api/ruview/analyze")
     print(f"\n  Starting server on http://{args.host}:{args.port}")
     print("=" * 60 + "\n")
 

@@ -16,6 +16,7 @@ Providers:
 - WeatherProvider: Open-Meteo (free, no auth)
 - NutritionProvider: Nutritionix (env key auth)
 - SentimentValidator: NLP Cloud (env key auth)
+- RuViewProvider: WiFi DensePose sensing (local, no auth)
 ===============================================================================
 """
 
@@ -323,19 +324,33 @@ class SentimentValidator:
 class ExternalContextProvider:
     """
     Orchestrator for external context enrichment.
-    Combines weather, nutrition, and sentiment providers.
+    Combines weather, nutrition, sentiment, and WiFi sensing providers.
 
     Connected to:
     - Neural Workflow AI Engine
     - AI Conversational Coach
     - Biometric Integration Engine
     - Dashboard Data Integration
+    - Real-time Data (RuView WiFi sensing)
     """
 
     def __init__(self):
         self.weather = WeatherProvider()
         self.nutrition = NutritionProvider()
         self.sentiment = SentimentValidator()
+        self._ruview = None  # Lazy-loaded
+
+    @property
+    def ruview(self):
+        """Lazy-load RuView provider to avoid import errors when not needed."""
+        if self._ruview is None:
+            try:
+                from ruview_provider import get_ruview_provider
+                self._ruview = get_ruview_provider()
+            except ImportError:
+                logger.info("[ExternalContextProvider] RuView provider not available")
+                self._ruview = False  # Mark as unavailable
+        return self._ruview if self._ruview is not False else None
 
     def get_weather(self, lat: float, lon: float) -> dict | None:
         return self.weather.get_weather(lat, lon)
@@ -345,6 +360,18 @@ class ExternalContextProvider:
 
     def validate_sentiment(self, text: str, local_family: str = None) -> dict | None:
         return self.sentiment.validate_sentiment(text, local_family)
+
+    def get_ruview_biometrics(self) -> dict | None:
+        """Get biometrics from RuView WiFi sensing (ghost protocol — no cameras)."""
+        if self.ruview:
+            return self.ruview.get_biometrics()
+        return None
+
+    def get_ruview_presence(self) -> dict | None:
+        """Get presence/occupancy data from RuView WiFi sensing."""
+        if self.ruview:
+            return self.ruview.get_presence()
+        return None
 
     def _weather_insight(self, weather_data: dict) -> str:
         """Generate human-readable weather insight from mood signals."""
@@ -416,6 +443,8 @@ class ExternalContextProvider:
             'nutrition_insight': None,
             'nutrition_data': None,
             'cross_validation': None,
+            'ruview_insight': None,
+            'ruview_data': None,
         }
 
         # Weather enrichment
@@ -439,5 +468,12 @@ class ExternalContextProvider:
             sentiment_data = self.validate_sentiment(text, local_family)
             if sentiment_data:
                 result['cross_validation'] = sentiment_data
+
+        # RuView WiFi sensing enrichment (ghost protocol — auto if available)
+        if context.get('ruview', True) and self.ruview:
+            ruview_bio = self.get_ruview_biometrics()
+            if ruview_bio:
+                result['ruview_data'] = ruview_bio
+                result['ruview_insight'] = self.ruview.get_insight()
 
         return result

@@ -1,0 +1,37 @@
+version: '3.8'
+
+services:
+  # ─── Quantara Emotion API ──────────────────────────────────────────
+  emotion-api:
+    build: .
+    ports:
+      - "5050:5050"
+    environment:
+      - PORT=5050
+      - RUVIEW_HOST=ruview
+      - RUVIEW_HTTP_PORT=3000
+      - RUVIEW_WS_PORT=3001
+    depends_on:
+      ruview:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ─── RuView WiFi DensePose Sensing ─────────────────────────────────
+  # Ghost Protocol: WiFi-based perception — no cameras, no wearables
+  # Starts in simulation mode for development (no hardware required)
+  # Swap --source simulate → --source esp32 for real hardware
+  ruview:
+    image: ruvnet/wifi-densepose:latest
+    ports:
+      - "8080:3000"   # REST API
+      - "8765:3001"   # WebSocket stream
+      - "5005:5005/udp"  # UDP CSI frames (for ESP32 nodes)
+    environment:
+      - RUST_LOG=info
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped

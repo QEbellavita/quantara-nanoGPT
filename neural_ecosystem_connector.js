@@ -349,11 +349,193 @@ class NeuralEmotionIntegration {
     }
 }
 
+/**
+ * RuView WiFi Sensing Client
+ * Ghost Protocol: biometric data via WiFi signals — no cameras, no wearables.
+ *
+ * Connected to:
+ * - Neural Workflow AI Engine
+ * - Biometric Integration Engine
+ * - Dashboard Data Integration
+ * - Real-time Data
+ */
+class RuViewClient {
+    constructor(emotionApiUrl = 'http://localhost:5050', ruviewUrl = 'http://localhost:8080') {
+        this.emotionApiUrl = emotionApiUrl;
+        this.ruviewUrl = ruviewUrl;
+        this.wsUrl = null;
+        this._ws = null;
+        this._listeners = new Map();
+        this._latestBiometrics = null;
+        this._latestPresence = null;
+        this._connected = false;
+    }
+
+    /**
+     * Check RuView connection status via Quantara API
+     */
+    async getStatus() {
+        const response = await fetch(`${this.emotionApiUrl}/api/ruview/status`);
+        return response.json();
+    }
+
+    /**
+     * Connect to RuView via Quantara API
+     */
+    async connect() {
+        const response = await fetch(`${this.emotionApiUrl}/api/ruview/connect`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+        });
+        const result = await response.json();
+        this._connected = result.connected;
+        return result;
+    }
+
+    /**
+     * Get current biometrics from WiFi sensing
+     * Returns: {heart_rate, hrv, eda, breathing_rate, motion_level, confidence, mood_signals}
+     */
+    async getBiometrics() {
+        const response = await fetch(`${this.emotionApiUrl}/api/ruview/biometrics`);
+        const data = await response.json();
+        if (data.status === 'success') {
+            this._latestBiometrics = data;
+        }
+        return data;
+    }
+
+    /**
+     * Get presence/occupancy data
+     * Returns: {detected, occupancy, motion_level}
+     */
+    async getPresence() {
+        const response = await fetch(`${this.emotionApiUrl}/api/ruview/presence`);
+        const data = await response.json();
+        if (data.status === 'success') {
+            this._latestPresence = data;
+        }
+        return data;
+    }
+
+    /**
+     * Analyze emotion using text + WiFi-sensed biometrics (ghost protocol)
+     * @param {string} text - Text to analyze
+     * @returns {Object} Emotion analysis with RuView biometric context
+     */
+    async analyzeWithWiFiBiometrics(text) {
+        const response = await fetch(`${this.emotionApiUrl}/api/ruview/analyze`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text })
+        });
+        return response.json();
+    }
+
+    /**
+     * Connect directly to RuView WebSocket for real-time updates
+     * @param {string} wsUrl - WebSocket URL (default: ws://localhost:8765/ws/sensing)
+     */
+    connectWebSocket(wsUrl = 'ws://localhost:8765/ws/sensing') {
+        if (typeof WebSocket === 'undefined') {
+            console.warn('[RuView] WebSocket not available in this environment');
+            return;
+        }
+
+        this.wsUrl = wsUrl;
+        this._ws = new WebSocket(wsUrl);
+
+        this._ws.onopen = () => {
+            this._connected = true;
+            console.log('[RuView] WebSocket connected');
+            this._emit('connected');
+        };
+
+        this._ws.onmessage = (event) => {
+            try {
+                const data = JSON.parse(event.data);
+                this._processSensingData(data);
+            } catch (e) {
+                // skip malformed frames
+            }
+        };
+
+        this._ws.onclose = () => {
+            this._connected = false;
+            console.log('[RuView] WebSocket disconnected');
+            this._emit('disconnected');
+        };
+
+        this._ws.onerror = (err) => {
+            console.warn('[RuView] WebSocket error:', err);
+        };
+    }
+
+    /**
+     * Disconnect WebSocket
+     */
+    disconnectWebSocket() {
+        if (this._ws) {
+            this._ws.close();
+            this._ws = null;
+        }
+    }
+
+    /**
+     * Process incoming sensing data from WebSocket
+     */
+    _processSensingData(data) {
+        const vitals = data.vital_signs || data.vitals || {};
+        const presence = data.presence || {};
+
+        if (vitals.heart_rate || vitals.hr_bpm) {
+            this._latestBiometrics = {
+                heart_rate: vitals.heart_rate || vitals.hr_bpm,
+                breathing_rate: vitals.breathing_rate || vitals.br_bpm,
+                confidence: vitals.confidence || 0,
+                motion_level: data.motion_level || presence.motion || 0,
+                source: 'ruview_wifi_ws',
+            };
+            this._emit('biometrics', this._latestBiometrics);
+        }
+
+        if (data.occupancy !== undefined || presence.detected !== undefined) {
+            this._latestPresence = {
+                detected: data.presence || presence.detected || false,
+                occupancy: data.occupancy || presence.count || 0,
+                motion_level: data.motion_level || presence.motion || 0,
+            };
+            this._emit('presence', this._latestPresence);
+        }
+
+        if (data.pose || data.keypoints) {
+            this._emit('pose', data.pose || data.keypoints);
+        }
+    }
+
+    get isConnected() { return this._connected; }
+    get latestBiometrics() { return this._latestBiometrics; }
+    get latestPresence() { return this._latestPresence; }
+
+    on(event, callback) {
+        if (!this._listeners.has(event)) this._listeners.set(event, []);
+        this._listeners.get(event).push(callback);
+    }
+
+    _emit(event, data) {
+        if (this._listeners.has(event)) {
+            this._listeners.get(event).forEach(cb => cb(data));
+        }
+    }
+}
+
+
 // Export for Node.js / CommonJS
 if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
         QuantaraEmotionAPI,
         NeuralEmotionIntegration,
+        RuViewClient,
         EMOTION_FAMILIES,
         ALL_EMOTIONS,
         EMOTION_TO_FAMILY
@@ -364,6 +546,7 @@ if (typeof module !== 'undefined' && module.exports) {
 if (typeof window !== 'undefined') {
     window.QuantaraEmotionAPI = QuantaraEmotionAPI;
     window.NeuralEmotionIntegration = NeuralEmotionIntegration;
+    window.RuViewClient = RuViewClient;
     window.EMOTION_FAMILIES = EMOTION_FAMILIES;
     window.ALL_EMOTIONS = ALL_EMOTIONS;
     window.EMOTION_TO_FAMILY = EMOTION_TO_FAMILY;
