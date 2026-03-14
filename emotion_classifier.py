@@ -1,15 +1,18 @@
 # emotion_classifier.py
 """
 ===============================================================================
-QUANTARA NEURAL ECOSYSTEM - Multimodal Emotion Classifier
+QUANTARA NEURAL ECOSYSTEM - Multimodal Emotion Classifier (32-Emotion Taxonomy)
 ===============================================================================
 ML-powered emotion analysis combining text embeddings with biometric signals.
+Two-stage hierarchical classification: family (9) → sub-emotion (32).
 
 Integrates with:
 - Neural Workflow AI Engine
 - AI Conversational Coach
 - Biometric Integration Engine
 - Real-time Dashboard Data
+- Emotion-Aware Training Engine
+- Therapist Dashboard Engine
 ===============================================================================
 """
 
@@ -26,6 +29,37 @@ try:
     HAS_SENTENCE_TRANSFORMERS = True
 except ImportError:
     HAS_SENTENCE_TRANSFORMERS = False
+
+
+# ─── 32-Emotion Taxonomy ────────────────────────────────────────────────────
+
+EMOTION_FAMILIES = {
+    'Joy': ['joy', 'excitement', 'enthusiasm', 'fun', 'gratitude', 'pride'],
+    'Sadness': ['sadness', 'grief', 'boredom', 'nostalgia'],
+    'Anger': ['anger', 'frustration', 'hate', 'contempt', 'disgust', 'jealousy'],
+    'Fear': ['fear', 'anxiety', 'worry', 'overwhelmed', 'stressed'],
+    'Love': ['love', 'compassion'],
+    'Calm': ['calm', 'relief', 'mindfulness', 'resilience', 'hope'],
+    'Self-Conscious': ['guilt', 'shame'],
+    'Surprise': ['surprise'],
+    'Neutral': ['neutral'],
+}
+
+FAMILY_NAMES = list(EMOTION_FAMILIES.keys())
+
+# Build reverse lookup: emotion → family
+_EMOTION_TO_FAMILY = {}
+for _family, _emotions in EMOTION_FAMILIES.items():
+    for _e in _emotions:
+        _EMOTION_TO_FAMILY[_e] = _family
+
+# Build family → emotion indices (populated after FusionHead.EMOTIONS is defined)
+_FAMILY_EMOTION_INDICES = {}
+
+
+def family_for_emotion(emotion: str) -> str:
+    """Get family name for an emotion. O(1) lookup."""
+    return _EMOTION_TO_FAMILY.get(emotion.lower(), 'Neutral')
 
 
 class SentenceEncoderWrapper:
@@ -59,10 +93,13 @@ class BiometricEncoder(nn.Module):
     """
     Encode biometric signals into a dense representation.
 
-    Input features:
-    - heart_rate: beats per minute (40-180 typical)
-    - hrv: heart rate variability in ms (10-100 typical)
-    - eda: electrodermal activity in microsiemens (0.5-20 typical)
+    Input features (8 total):
+    - heart_rate_norm, hrv_norm, eda_norm (3 raw normalized)
+    - hr_arousal: high HR indicator (>100 bpm)
+    - hrv_stress: low HRV indicator (<30 ms)
+    - eda_activation: high EDA indicator (>5 µS)
+    - hrv_calm: high HRV indicator (>65 ms) — distinguishes Calm family
+    - eda_overwhelm: very high EDA indicator (>7 µS) — distinguishes overwhelmed
 
     Output: 16-dimensional encoded representation
     """
@@ -84,13 +121,9 @@ class BiometricEncoder(nn.Module):
         super().__init__()
         self.output_dim = output_dim
 
-        # Input: 6 features (3 raw + 3 derived)
-        # - heart_rate_norm, hrv_norm, eda_norm
-        # - hr_arousal (high HR indicator)
-        # - hrv_stress (low HRV indicator)
-        # - eda_activation (high EDA indicator)
+        # Input: 8 features (3 raw + 5 derived)
         self.encoder = nn.Sequential(
-            nn.Linear(6, 32),
+            nn.Linear(8, 32),
             nn.ReLU(),
             nn.Linear(32, output_dim),
             nn.Tanh()
@@ -118,34 +151,20 @@ class BiometricEncoder(nn.Module):
             1.0 if hr > 100 else 0.0,   # hr_arousal
             1.0 if hrv < 30 else 0.0,   # hrv_stress
             1.0 if eda > 5 else 0.0,    # eda_activation
+            1.0 if hrv > 65 else 0.0,   # hrv_calm (Calm family discriminator)
+            1.0 if eda > 7 else 0.0,    # eda_overwhelm (overwhelmed discriminator)
         ]
 
         return torch.tensor(features, dtype=torch.float32)
 
     def encode(self, biometrics: dict) -> torch.Tensor:
-        """
-        Encode single biometrics dict to tensor.
-
-        Args:
-            biometrics: dict with heart_rate, hrv, eda (all optional)
-
-        Returns:
-            (1, output_dim) tensor
-        """
+        """Encode single biometrics dict to tensor. Returns (1, output_dim)."""
         features = self._extract_features(biometrics).unsqueeze(0)
         with torch.no_grad():
             return self.encoder(features)
 
     def encode_batch(self, batch: list) -> torch.Tensor:
-        """
-        Encode batch of biometrics dicts.
-
-        Args:
-            batch: list of biometrics dicts
-
-        Returns:
-            (batch_size, output_dim) tensor
-        """
+        """Encode batch of biometrics dicts. Returns (batch_size, output_dim)."""
         features = torch.stack([self._extract_features(b) for b in batch])
         with torch.no_grad():
             return self.encoder(features)
@@ -157,37 +176,73 @@ class BiometricEncoder(nn.Module):
 
 class FusionHead(nn.Module):
     """
-    Multimodal fusion classification head.
+    Multimodal fusion classification head with two-stage hierarchy.
 
-    Concatenates text and biometric embeddings, then classifies
-    into emotion categories via 2-layer MLP.
+    Stage 1: Classify into 9 emotion families
+    Stage 2: Classify sub-emotion within predicted family (32 total)
+
+    Confidence fallback: if sub-emotion confidence < threshold,
+    returns the family root emotion instead.
     """
 
-    EMOTIONS = ['sadness', 'joy', 'love', 'anger', 'fear', 'surprise', 'neutral']
+    # All 32 emotions in canonical order (family-grouped)
+    EMOTIONS = [
+        # Joy family
+        'joy', 'excitement', 'enthusiasm', 'fun', 'gratitude', 'pride',
+        # Sadness family
+        'sadness', 'grief', 'boredom', 'nostalgia',
+        # Anger family
+        'anger', 'frustration', 'hate', 'contempt', 'disgust', 'jealousy',
+        # Fear family
+        'fear', 'anxiety', 'worry', 'overwhelmed', 'stressed',
+        # Love family
+        'love', 'compassion',
+        # Calm family
+        'calm', 'relief', 'mindfulness', 'resilience', 'hope',
+        # Self-Conscious family
+        'guilt', 'shame',
+        # Atomic
+        'surprise',
+        'neutral',
+    ]
+
+    # Family root emotions (first emotion in each family, used for fallback)
+    FAMILY_ROOTS = {
+        'Joy': 'joy', 'Sadness': 'sadness', 'Anger': 'anger',
+        'Fear': 'fear', 'Love': 'love', 'Calm': 'calm',
+        'Self-Conscious': 'guilt', 'Surprise': 'surprise', 'Neutral': 'neutral',
+    }
 
     def __init__(
         self,
         text_dim: int = 512,
         biometric_dim: int = 16,
         hidden_dim: int = 128,
-        num_emotions: int = 7,
+        num_emotions: int = 32,
+        num_families: int = 9,
         dropout: float = 0.3
     ):
         super().__init__()
         self.text_dim = text_dim
         self.biometric_dim = biometric_dim
         self.num_emotions = num_emotions
+        self.num_families = num_families
 
-        # Fusion MLP
-        self.classifier = nn.Sequential(
+        # Shared feature extractor
+        self.shared = nn.Sequential(
             nn.Linear(text_dim + biometric_dim, hidden_dim),
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(hidden_dim, hidden_dim // 2),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(hidden_dim // 2, num_emotions),
         )
+
+        # Stage 1: Family classifier (9-way)
+        self.family_classifier = nn.Linear(hidden_dim // 2, num_families)
+
+        # Stage 2: Sub-emotion classifier (32-way)
+        self.emotion_classifier = nn.Linear(hidden_dim // 2, num_emotions)
 
         # Zero biometric embedding for text-only mode
         self.register_buffer(
@@ -195,34 +250,104 @@ class FusionHead(nn.Module):
             torch.zeros(1, biometric_dim)
         )
 
+        # Build family → emotion index mapping
+        self._build_family_indices()
+
+    def _build_family_indices(self):
+        """Build mapping from family index to emotion indices."""
+        global _FAMILY_EMOTION_INDICES
+        for fi, family_name in enumerate(FAMILY_NAMES):
+            emotion_names = EMOTION_FAMILIES[family_name]
+            indices = [self.EMOTIONS.index(e) for e in emotion_names]
+            _FAMILY_EMOTION_INDICES[fi] = indices
+
     def forward(
         self,
         text_embedding: torch.Tensor,
         biometric_embedding: torch.Tensor = None
-    ) -> torch.Tensor:
+    ) -> tuple:
         """
-        Forward pass.
-
-        Args:
-            text_embedding: (batch, text_dim) from GPT
-            biometric_embedding: (batch, biometric_dim) or None
+        Forward pass returning both emotion and family logits.
 
         Returns:
-            (batch, num_emotions) probability distribution
+            (emotion_probs, family_probs) — both softmaxed
         """
         batch_size = text_embedding.shape[0]
 
         if biometric_embedding is None:
             biometric_embedding = self.zero_biometric.expand(batch_size, -1)
 
-        # Concatenate embeddings
         fused = torch.cat([text_embedding, biometric_embedding], dim=-1)
+        shared_features = self.shared(fused)
 
-        # Classify
-        logits = self.classifier(fused)
-        probs = torch.softmax(logits, dim=-1)
+        emotion_logits = self.emotion_classifier(shared_features)
+        family_logits = self.family_classifier(shared_features)
 
-        return probs
+        emotion_probs = torch.softmax(emotion_logits, dim=-1)
+        family_probs = torch.softmax(family_logits, dim=-1)
+
+        return emotion_probs, family_probs
+
+    def classify_with_fallback(
+        self,
+        text_embedding: torch.Tensor,
+        biometric_embedding: torch.Tensor = None,
+        threshold: float = 0.6
+    ) -> dict:
+        """
+        Two-stage classification with confidence fallback.
+
+        1. Classify into family (9-way)
+        2. Classify sub-emotion within predicted family
+        3. If sub-emotion confidence < threshold, return family root emotion
+
+        Returns:
+            {emotion, family, confidence, is_fallback}
+        """
+        emotion_probs, family_probs = self.forward(text_embedding, biometric_embedding)
+
+        # Squeeze batch dim for single-sample inference
+        emotion_probs = emotion_probs.squeeze(0)
+        family_probs = family_probs.squeeze(0)
+
+        # Stage 1: Get predicted family
+        family_idx = int(torch.argmax(family_probs))
+        family_name = FAMILY_NAMES[family_idx]
+        family_confidence = float(family_probs[family_idx])
+
+        # Stage 2: Get best sub-emotion within that family
+        family_emotion_indices = _FAMILY_EMOTION_INDICES.get(family_idx, [])
+
+        if family_emotion_indices:
+            family_emotion_probs = emotion_probs[family_emotion_indices]
+            # Re-normalize within family
+            family_emotion_probs = family_emotion_probs / (family_emotion_probs.sum() + 1e-8)
+
+            best_within_family = int(torch.argmax(family_emotion_probs))
+            sub_emotion_idx = family_emotion_indices[best_within_family]
+            sub_emotion = self.EMOTIONS[sub_emotion_idx]
+            sub_confidence = float(family_emotion_probs[best_within_family])
+        else:
+            sub_emotion = self.FAMILY_ROOTS.get(family_name, 'neutral')
+            sub_confidence = 0.0
+
+        # Fallback: if sub-emotion confidence is low, use family root
+        is_fallback = sub_confidence < threshold
+        if is_fallback:
+            emotion = self.FAMILY_ROOTS.get(family_name, sub_emotion)
+            confidence = family_confidence
+        else:
+            emotion = sub_emotion
+            confidence = sub_confidence
+
+        return {
+            'emotion': emotion,
+            'family': family_name,
+            'confidence': float(confidence),
+            'is_fallback': is_fallback,
+            'family_confidence': float(family_confidence),
+            'sub_emotion_confidence': float(sub_confidence),
+        }
 
     def get_emotion_name(self, index: int) -> str:
         """Get emotion name from index."""
@@ -232,22 +357,23 @@ class FusionHead(nn.Module):
         """Get index from emotion name."""
         return self.EMOTIONS.index(name.lower())
 
+    def get_family_index(self, family_name: str) -> int:
+        """Get family index from name."""
+        return FAMILY_NAMES.index(family_name)
+
 
 class MultimodalEmotionAnalyzer:
     """
     Main interface for multimodal emotion analysis.
 
-    Combines text embeddings with biometric signals
-    for accurate emotion classification.
-
-    Text embedding options:
-    - sentence-transformers (recommended): Semantic embeddings, best accuracy
-    - nanoGPT: Character-level, requires biometrics for good accuracy
+    Combines text embeddings with biometric signals for accurate
+    emotion classification across 32 emotions in 9 families.
 
     Connected to:
     - Neural Workflow AI Engine
     - AI Conversational Coach
     - Biometric Integration Engine
+    - Therapist Dashboard Engine
     """
 
     def __init__(
@@ -280,24 +406,29 @@ class MultimodalEmotionAnalyzer:
             else:
                 self._create_dummy_gpt()
 
-        # Initialize biometric encoder
+        # Initialize biometric encoder (8-feature input)
         self.biometric_encoder = BiometricEncoder(output_dim=16)
         self.biometric_encoder.to(self.device)
 
-        # Load or create fusion head
+        # Load or create fusion head (32 emotions, 9 families)
         self.fusion_head = FusionHead(
             text_dim=self.n_embd,
             biometric_dim=16,
-            num_emotions=7
+            num_emotions=32,
+            num_families=9
         )
 
         if classifier_checkpoint and Path(classifier_checkpoint).exists():
             state = torch.load(classifier_checkpoint, map_location=self.device)
             # Check if dimensions match
-            saved_text_dim = state['fusion_head']['classifier.0.weight'].shape[1] - 16
+            saved_text_dim = state['fusion_head']['shared.0.weight'].shape[1] - 16
+            saved_num_emotions = state['fusion_head']['emotion_classifier.weight'].shape[0]
             if saved_text_dim != self.n_embd:
                 print(f"[EmotionAnalyzer] Dimension mismatch: saved={saved_text_dim}, current={self.n_embd}")
                 print(f"[EmotionAnalyzer] Recreating fusion head with new dimensions (requires retraining)")
+            elif saved_num_emotions != 32:
+                print(f"[EmotionAnalyzer] Emotion count mismatch: saved={saved_num_emotions}, current=32")
+                print(f"[EmotionAnalyzer] Recreating fusion head (requires retraining)")
             else:
                 self.fusion_head.load_state_dict(state['fusion_head'])
                 self.biometric_encoder.load_state_dict(state['biometric_encoder'])
@@ -360,7 +491,8 @@ class MultimodalEmotionAnalyzer:
         self.fusion_head = FusionHead(
             text_dim=64,
             biometric_dim=16,
-            num_emotions=7
+            num_emotions=32,
+            num_families=9
         )
 
     def _setup_tokenizer(self):
@@ -410,13 +542,10 @@ class MultimodalEmotionAnalyzer:
         """
         Analyze emotional content of text with optional biometrics.
 
-        Args:
-            text: Input text to analyze
-            biometrics: Optional dict with heart_rate, hrv, eda
-            return_embedding: If True, include raw embedding in result
+        Uses two-stage classification with confidence fallback.
 
         Returns:
-            Dict with emotion scores, dominant emotion, confidence
+            Dict with emotion, family, confidence, is_fallback, scores
         """
         start_time = time.time()
 
@@ -426,32 +555,33 @@ class MultimodalEmotionAnalyzer:
         # Get biometric embedding
         if biometrics:
             bio_embedding = self.biometric_encoder.encode(biometrics).to(self.device)
-            biometric_contribution = 0.3  # Placeholder - could be learned
+            biometric_contribution = 0.3
         else:
             bio_embedding = None
             biometric_contribution = 0.0
 
-        # Classify
+        # Two-stage classify with fallback
         with torch.no_grad():
-            probs = self.fusion_head(text_embedding, bio_embedding)
+            classification = self.fusion_head.classify_with_fallback(
+                text_embedding, bio_embedding
+            )
+            emotion_probs, family_probs = self.fusion_head(text_embedding, bio_embedding)
 
-        probs = probs.squeeze(0).cpu().numpy()
+        emotion_probs_np = emotion_probs.squeeze(0).cpu().numpy()
 
-        # Build result
+        # Build scores dict
         scores = {
-            emotion: float(probs[i])
+            emotion: float(emotion_probs_np[i])
             for i, emotion in enumerate(FusionHead.EMOTIONS)
         }
-
-        dominant_idx = int(np.argmax(probs))
-        dominant_emotion = FusionHead.EMOTIONS[dominant_idx]
-        confidence = float(probs[dominant_idx])
 
         latency_ms = (time.time() - start_time) * 1000
 
         result = {
-            'dominant_emotion': dominant_emotion,
-            'confidence': confidence,
+            'dominant_emotion': classification['emotion'],
+            'family': classification['family'],
+            'confidence': classification['confidence'],
+            'is_fallback': classification['is_fallback'],
             'scores': scores,
             'biometric_contribution': biometric_contribution,
             'latency_ms': round(latency_ms, 2),

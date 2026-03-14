@@ -55,8 +55,23 @@ class QuantaraEmotionGPT:
         # Load model
         self._load_model(checkpoint_path)
 
-        # Emotion categories for analysis
-        self.emotions = ['sadness', 'joy', 'love', 'anger', 'fear', 'surprise', 'neutral']
+        # 32-Emotion taxonomy (9 families)
+        self.emotion_families = {
+            'Joy': ['joy', 'excitement', 'enthusiasm', 'fun', 'gratitude', 'pride'],
+            'Sadness': ['sadness', 'grief', 'boredom', 'nostalgia'],
+            'Anger': ['anger', 'frustration', 'hate', 'contempt', 'disgust', 'jealousy'],
+            'Fear': ['fear', 'anxiety', 'worry', 'overwhelmed', 'stressed'],
+            'Love': ['love', 'compassion'],
+            'Calm': ['calm', 'relief', 'mindfulness', 'resilience', 'hope'],
+            'Self-Conscious': ['guilt', 'shame'],
+            'Surprise': ['surprise'],
+            'Neutral': ['neutral'],
+        }
+        self.emotions = [e for ems in self.emotion_families.values() for e in ems]
+        self._emotion_to_family = {}
+        for fam, ems in self.emotion_families.items():
+            for e in ems:
+                self._emotion_to_family[e] = fam
 
         print(f"[Quantara] Emotion GPT loaded on {self.device}")
 
@@ -191,9 +206,12 @@ class QuantaraEmotionGPT:
         # Find dominant emotion
         dominant = max(scores, key=scores.get)
 
+        family = self._emotion_to_family.get(dominant, 'Neutral')
+
         return {
             'scores': scores,
             'dominant_emotion': dominant,
+            'family': family,
             'confidence': scores[dominant],
             'text': text[:100] + '...' if len(text) > 100 else text
         }

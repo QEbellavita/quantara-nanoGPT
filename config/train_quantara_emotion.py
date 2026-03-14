@@ -1,8 +1,9 @@
 """
 ===============================================================================
-QUANTARA NANOGPT - Emotion Training Configuration
+QUANTARA NANOGPT - Emotion Training Configuration (32 Emotions)
 ===============================================================================
 Train an emotion-aware GPT model for the Quantara Neural Ecosystem.
+Supports 32 emotions across 9 families with hierarchical classification.
 
 Integrates with:
 - AI Conversational Coach

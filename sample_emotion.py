@@ -1,13 +1,15 @@
 """
 ===============================================================================
-QUANTARA NANOGPT - Emotion Sampling Script
+QUANTARA NANOGPT - Emotion Sampling Script (32-Emotion Taxonomy)
 ===============================================================================
 Generate emotion-aware text samples from trained model.
+Supports 32 emotions across 9 families with hierarchical classification.
 
 Usage:
   python sample_emotion.py --emotion joy --prompt "Today I feel"
-  python sample_emotion.py --emotion sadness --num_samples 5
+  python sample_emotion.py --emotion anxiety --num_samples 5
   python sample_emotion.py --interactive
+  python sample_emotion.py --list-emotions
 ===============================================================================
 """
 
@@ -21,6 +23,33 @@ import tiktoken
 
 # nanoGPT
 from model import GPT, GPTConfig
+
+
+# ─── 32-Emotion Taxonomy ────────────────────────────────────────────────────
+
+EMOTION_FAMILIES = {
+    'Joy': ['joy', 'excitement', 'enthusiasm', 'fun', 'gratitude', 'pride'],
+    'Sadness': ['sadness', 'grief', 'boredom', 'nostalgia'],
+    'Anger': ['anger', 'frustration', 'hate', 'contempt', 'disgust', 'jealousy'],
+    'Fear': ['fear', 'anxiety', 'worry', 'overwhelmed', 'stressed'],
+    'Love': ['love', 'compassion'],
+    'Calm': ['calm', 'relief', 'mindfulness', 'resilience', 'hope'],
+    'Self-Conscious': ['guilt', 'shame'],
+    'Surprise': ['surprise'],
+    'Neutral': ['neutral'],
+}
+
+ALL_EMOTIONS = [e for emotions in EMOTION_FAMILIES.values() for e in emotions]
+
+
+def print_emotion_list():
+    """Print all 32 emotions grouped by family."""
+    print("\n  32 Emotions (9 Families):")
+    print("  " + "-" * 56)
+    for family, emotions in EMOTION_FAMILIES.items():
+        print(f"  {family:16s}: {', '.join(emotions)}")
+    print("  " + "-" * 56)
+    print(f"  Total: {len(ALL_EMOTIONS)} emotions\n")
 
 
 def load_model(checkpoint_path, device):
@@ -102,9 +131,9 @@ def generate(
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Quantara Emotion GPT Sampling')
+    parser = argparse.ArgumentParser(description='Quantara Emotion GPT Sampling (32 Emotions)')
     parser.add_argument('--checkpoint', default='out-quantara-emotion/ckpt.pt', help='Checkpoint path')
-    parser.add_argument('--emotion', default=None, help='Target emotion (joy, sadness, anger, fear, love, surprise)')
+    parser.add_argument('--emotion', default=None, help='Target emotion (see --list-emotions for all 32)')
     parser.add_argument('--prompt', default='', help='Starting prompt')
     parser.add_argument('--num_samples', type=int, default=1, help='Number of samples')
     parser.add_argument('--max_tokens', type=int, default=256, help='Max tokens per sample')
@@ -112,7 +141,13 @@ def main():
     parser.add_argument('--top_k', type=int, default=200, help='Top-k sampling')
     parser.add_argument('--device', default='auto', help='Device (cuda, mps, cpu, auto)')
     parser.add_argument('--interactive', action='store_true', help='Interactive mode')
+    parser.add_argument('--list-emotions', action='store_true', help='List all 32 emotions and exit')
     args = parser.parse_args()
+
+    # List emotions and exit
+    if args.list_emotions:
+        print_emotion_list()
+        return
 
     # Detect device
     if args.device == 'auto':
@@ -143,10 +178,15 @@ def main():
 
     if args.interactive:
         print("\n" + "=" * 60)
-        print("  QUANTARA EMOTION GPT - Interactive Sampling")
+        print("  QUANTARA EMOTION GPT - Interactive Sampling (32 Emotions)")
         print("=" * 60)
-        print("  Emotions: joy, sadness, anger, fear, love, surprise")
-        print("  Type '/emotion <name>' to set emotion, '/quit' to exit")
+        print_emotion_list()
+        print("  Commands:")
+        print("    /emotion <name>  — set target emotion")
+        print("    /emotion         — clear emotion (auto)")
+        print("    /family <name>   — list emotions in a family")
+        print("    /list            — show all emotions")
+        print("    /quit            — exit")
         print("=" * 60 + "\n")
 
         current_emotion = args.emotion
@@ -160,12 +200,35 @@ def main():
             if user_input.lower() == '/quit':
                 break
             elif user_input.startswith('/emotion '):
-                current_emotion = user_input.split(' ')[1]
-                print(f"  [Emotion set to: {current_emotion}]")
+                em = user_input.split(' ', 1)[1].strip().lower()
+                if em in ALL_EMOTIONS:
+                    current_emotion = em
+                    family = None
+                    for fam, ems in EMOTION_FAMILIES.items():
+                        if em in ems:
+                            family = fam
+                            break
+                    print(f"  [Emotion set to: {current_emotion} ({family} family)]")
+                else:
+                    print(f"  [Unknown emotion: {em}. Use /list to see all.]")
                 continue
             elif user_input == '/emotion':
                 current_emotion = None
                 print("  [Emotion cleared]")
+                continue
+            elif user_input.startswith('/family '):
+                fam_name = user_input.split(' ', 1)[1].strip()
+                found = False
+                for family, emotions in EMOTION_FAMILIES.items():
+                    if family.lower() == fam_name.lower():
+                        print(f"  {family}: {', '.join(emotions)}")
+                        found = True
+                        break
+                if not found:
+                    print(f"  [Unknown family: {fam_name}. Families: {', '.join(EMOTION_FAMILIES.keys())}]")
+                continue
+            elif user_input == '/list':
+                print_emotion_list()
                 continue
 
             output = generate(

@@ -1,9 +1,10 @@
 """
 ===============================================================================
-QUANTARA NANOGPT - Fast Emotion Training (Debug/Test)
+QUANTARA NANOGPT - Fast Emotion Training (Debug/Test, 32 Emotions)
 ===============================================================================
 Quick training config for testing on MacBook.
 Trains a small model in ~15-30 minutes.
+Supports 32 emotions across 9 families with hierarchical classification.
 
 Usage:
   python train.py config/train_quantara_emotion_fast.py --device=mps
