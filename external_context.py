@@ -155,3 +155,96 @@ class WeatherProvider:
         except Exception as e:
             logger.warning(f"[WeatherProvider] Weather fetch failed: {e}")
             return None
+
+
+class NutritionProvider:
+    """
+    Analyzes food logs via Nutritionix Natural Language API.
+    Auth: NUTRITIONIX_APP_ID and NUTRITIONIX_API_KEY env vars.
+
+    Connected to:
+    - AI Conversational Coach
+    - Biometric Integration Engine
+    - Dashboard Data Integration
+    """
+
+    API_URL = 'https://trackapi.nutritionix.com/v2/natural/nutrients'
+
+    def _derive_mood_signals(
+        self, calories: float, protein_g: float, sugar_g: float, caffeine_mg: float
+    ) -> list:
+        """Derive mood-relevant signals from nutrition data."""
+        signals = []
+        if caffeine_mg > 300:
+            signals.append('high_caffeine')
+        if protein_g < 15:
+            signals.append('low_protein')
+        if sugar_g > 50:
+            signals.append('sugar_crash_risk')
+        if calories < 500:
+            signals.append('undereating')
+        if calories > 1000:
+            signals.append('post_meal_fatigue')
+        return signals
+
+    def get_nutrition(self, food_log: list[str]) -> dict | None:
+        """
+        Analyze a food log using Nutritionix natural language API.
+        Returns None if keys are missing or API fails.
+        """
+        app_id = os.environ.get('NUTRITIONIX_APP_ID')
+        api_key = os.environ.get('NUTRITIONIX_API_KEY')
+
+        if not app_id or not api_key:
+            logger.warning("[NutritionProvider] Missing NUTRITIONIX_APP_ID or NUTRITIONIX_API_KEY")
+            return None
+
+        query = '. '.join(food_log)
+
+        try:
+            resp = requests.post(self.API_URL, json={
+                'query': query,
+            }, headers={
+                'x-app-id': app_id,
+                'x-app-key': api_key,
+                'Content-Type': 'application/json',
+            }, timeout=API_TIMEOUT)
+            resp.raise_for_status()
+            data = resp.json()
+
+            foods = data.get('foods', [])
+            total_calories = sum(f.get('nf_calories', 0) for f in foods)
+            protein_g = sum(f.get('nf_protein', 0) for f in foods)
+            carbs_g = sum(f.get('nf_total_carbohydrate', 0) for f in foods)
+            fat_g = sum(f.get('nf_total_fat', 0) for f in foods)
+            sugar_g = sum(f.get('nf_sugars', 0) for f in foods)
+            caffeine_mg = sum(f.get('nf_caffeine', 0) or 0 for f in foods)
+
+            items = [
+                {
+                    'name': f.get('food_name', 'Unknown'),
+                    'qty': f.get('serving_qty', 1),
+                    'calories': f.get('nf_calories', 0),
+                    'caffeine_mg': f.get('nf_caffeine', 0) or 0,
+                }
+                for f in foods
+            ]
+
+            mood_signals = self._derive_mood_signals(
+                total_calories, protein_g, sugar_g, caffeine_mg
+            )
+
+            return {
+                'total_calories': total_calories,
+                'protein_g': protein_g,
+                'carbs_g': carbs_g,
+                'fat_g': fat_g,
+                'caffeine_mg': caffeine_mg,
+                'sugar_g': sugar_g,
+                'items': items,
+                'mood_signals': mood_signals,
+            }
+
+        except Exception as e:
+            logger.warning(f"[NutritionProvider] API call failed: {e}")
+            return None
