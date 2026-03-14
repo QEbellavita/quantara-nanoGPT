@@ -7,6 +7,7 @@ from unittest.mock import patch, MagicMock
 from external_context import WeatherProvider
 from external_context import NutritionProvider
 from external_context import SentimentValidator
+from external_context import ExternalContextProvider
 
 
 class TestWeatherProvider:
@@ -336,3 +337,96 @@ class TestSentimentValidator:
         assert agrees is True
         agrees = self.validator._check_agreement('NEGATIVE', 'Neutral')
         assert agrees is True
+
+
+class TestExternalContextProvider:
+    def setup_method(self):
+        self.provider = ExternalContextProvider()
+
+    @patch.object(WeatherProvider, 'get_weather')
+    def test_enrich_coaching_weather_only(self, mock_weather):
+        """Context with only location returns weather insight."""
+        mock_weather.return_value = {
+            'temperature_c': 5.0, 'humidity': 60, 'weather_code': 61,
+            'weather_description': 'Slight rain', 'uv_index': 1,
+            'air_quality': {'pm2_5': 10, 'pm10': 15},
+            'mood_signals': ['low_sunlight'],
+        }
+
+        context = {'location': [37.77, -122.42]}
+        result = self.provider.enrich_coaching(context, "I feel sad")
+
+        assert result['weather_insight'] is not None
+        assert result['weather_data'] is not None
+        assert result['nutrition_insight'] is None
+        assert result['cross_validation'] is None
+
+    @patch.object(NutritionProvider, 'get_nutrition')
+    def test_enrich_coaching_nutrition_only(self, mock_nutrition):
+        """Context with only food_log returns nutrition insight."""
+        mock_nutrition.return_value = {
+            'total_calories': 15, 'protein_g': 0.9, 'carbs_g': 0,
+            'fat_g': 0, 'caffeine_mg': 350, 'sugar_g': 0,
+            'items': [{'name': 'coffee', 'qty': 3, 'calories': 15, 'caffeine_mg': 350}],
+            'mood_signals': ['high_caffeine'],
+        }
+
+        context = {'food_log': ['3 cups of coffee']}
+        result = self.provider.enrich_coaching(context, "I feel anxious")
+
+        assert result['nutrition_insight'] is not None
+        assert result['nutrition_data'] is not None
+        assert result['weather_insight'] is None
+
+    @patch.object(SentimentValidator, 'validate_sentiment')
+    def test_enrich_coaching_sentiment_only(self, mock_sentiment):
+        """Context with validate_sentiment returns cross_validation."""
+        mock_sentiment.return_value = {
+            'nlpcloud_sentiment': 'NEGATIVE',
+            'positive_score': 0.1, 'negative_score': 0.9,
+            'agrees_with_local': True,
+        }
+
+        context = {'validate_sentiment': True}
+        result = self.provider.enrich_coaching(context, "I feel terrible", local_family='Sadness')
+
+        assert result['cross_validation'] is not None
+        assert result['cross_validation']['agrees_with_local'] is True
+        assert result['weather_insight'] is None
+        assert result['nutrition_insight'] is None
+
+    def test_enrich_coaching_empty_context(self):
+        """Empty context dict returns all None."""
+        result = self.provider.enrich_coaching({}, "hello")
+
+        assert result['weather_insight'] is None
+        assert result['nutrition_insight'] is None
+        assert result['cross_validation'] is None
+
+    @patch.object(WeatherProvider, 'get_weather')
+    def test_enrich_coaching_weather_failure_graceful(self, mock_weather):
+        """Weather failure still returns structured result with Nones."""
+        mock_weather.return_value = None
+
+        context = {'location': [37.77, -122.42]}
+        result = self.provider.enrich_coaching(context, "I feel sad")
+
+        assert result['weather_insight'] is None
+        assert result['weather_data'] is None
+
+    def test_weather_insight_text_low_sunlight(self):
+        """Low sunlight produces appropriate insight text."""
+        insight = self.provider._weather_insight({
+            'weather_description': 'Slight rain',
+            'temperature_c': 10,
+            'mood_signals': ['low_sunlight'],
+        })
+        assert 'sunlight' in insight.lower() or 'overcast' in insight.lower() or 'rain' in insight.lower()
+
+    def test_nutrition_insight_text_high_caffeine(self):
+        """High caffeine produces appropriate insight text."""
+        insight = self.provider._nutrition_insight({
+            'caffeine_mg': 350,
+            'mood_signals': ['high_caffeine'],
+        })
+        assert 'caffeine' in insight.lower()

@@ -318,3 +318,126 @@ class SentimentValidator:
         except Exception as e:
             logger.warning(f"[SentimentValidator] API call failed: {e}")
             return None
+
+
+class ExternalContextProvider:
+    """
+    Orchestrator for external context enrichment.
+    Combines weather, nutrition, and sentiment providers.
+
+    Connected to:
+    - Neural Workflow AI Engine
+    - AI Conversational Coach
+    - Biometric Integration Engine
+    - Dashboard Data Integration
+    """
+
+    def __init__(self):
+        self.weather = WeatherProvider()
+        self.nutrition = NutritionProvider()
+        self.sentiment = SentimentValidator()
+
+    def get_weather(self, lat: float, lon: float) -> dict | None:
+        return self.weather.get_weather(lat, lon)
+
+    def get_nutrition(self, food_log: list[str]) -> dict | None:
+        return self.nutrition.get_nutrition(food_log)
+
+    def validate_sentiment(self, text: str, local_family: str = None) -> dict | None:
+        return self.sentiment.validate_sentiment(text, local_family)
+
+    def _weather_insight(self, weather_data: dict) -> str:
+        """Generate human-readable weather insight from mood signals."""
+        signals = weather_data.get('mood_signals', [])
+        desc = weather_data.get('weather_description', 'Unknown')
+        temp = weather_data.get('temperature_c', 0)
+
+        parts = []
+        if 'low_sunlight' in signals:
+            parts.append(f"{desc} conditions with low sunlight may be affecting your mood")
+        if 'extreme_temp' in signals:
+            if temp < 0:
+                parts.append(f"Cold temperatures ({temp}°C) can contribute to low energy")
+            else:
+                parts.append(f"High heat ({temp}°C) can increase irritability and fatigue")
+        if 'high_humidity' in signals:
+            parts.append("High humidity can contribute to feelings of discomfort")
+        if 'poor_air_quality' in signals:
+            parts.append("Poor air quality may be affecting how you feel physically")
+        if 'high_uv' in signals:
+            parts.append("High UV levels — consider staying hydrated and seeking shade")
+
+        if not parts:
+            return f"Current conditions: {desc}, {temp}°C — no significant weather-mood factors detected."
+
+        return '. '.join(parts) + '.'
+
+    def _nutrition_insight(self, nutrition_data: dict) -> str:
+        """Generate human-readable nutrition insight from mood signals."""
+        signals = nutrition_data.get('mood_signals', [])
+        caffeine = nutrition_data.get('caffeine_mg', 0)
+        calories = nutrition_data.get('total_calories', 0)
+
+        parts = []
+        if 'high_caffeine' in signals:
+            parts.append(f"High caffeine intake (~{caffeine:.0f}mg) may be amplifying anxiety or jitters")
+        if 'low_protein' in signals:
+            parts.append("Low protein in your food log may contribute to fatigue")
+        if 'sugar_crash_risk' in signals:
+            parts.append("High sugar intake could lead to an energy crash")
+        if 'undereating' in signals:
+            parts.append(f"Low calorie intake ({calories:.0f} cal) may be causing irritability or low energy")
+        if 'post_meal_fatigue' in signals:
+            parts.append("Large meal may cause post-meal drowsiness")
+
+        if not parts:
+            return "No significant nutrition-mood factors detected in your food log."
+
+        return '. '.join(parts) + '.'
+
+    def enrich_coaching(self, context: dict, text: str, local_family: str = None) -> dict:
+        """
+        Enrich coaching response with external context.
+        Each context key is independent — client can pass any combination.
+
+        Args:
+            context: Raw context object from API request.
+                     Keys: 'location' (lat/lon), 'food_log' (list), 'validate_sentiment' (bool)
+            text: User's original message (used for sentiment validation).
+            local_family: Emotion family from local classifier (for agreement check).
+
+        Returns:
+            Dict with weather_insight, weather_data, nutrition_insight,
+            nutrition_data, and cross_validation fields (any may be None).
+        """
+        result = {
+            'weather_insight': None,
+            'weather_data': None,
+            'nutrition_insight': None,
+            'nutrition_data': None,
+            'cross_validation': None,
+        }
+
+        # Weather enrichment
+        location = context.get('location')
+        if location and isinstance(location, (list, tuple)) and len(location) == 2:
+            weather_data = self.get_weather(location[0], location[1])
+            if weather_data:
+                result['weather_data'] = weather_data
+                result['weather_insight'] = self._weather_insight(weather_data)
+
+        # Nutrition enrichment
+        food_log = context.get('food_log')
+        if food_log and isinstance(food_log, list):
+            nutrition_data = self.get_nutrition(food_log)
+            if nutrition_data:
+                result['nutrition_data'] = nutrition_data
+                result['nutrition_insight'] = self._nutrition_insight(nutrition_data)
+
+        # Sentiment cross-validation
+        if context.get('validate_sentiment'):
+            sentiment_data = self.validate_sentiment(text, local_family)
+            if sentiment_data:
+                result['cross_validation'] = sentiment_data
+
+        return result
