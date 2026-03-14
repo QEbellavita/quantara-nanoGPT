@@ -428,29 +428,67 @@ class MultimodalEmotionAnalyzer:
         self.biometric_encoder = BiometricEncoder(output_dim=16)
         self.biometric_encoder.to(self.device)
 
+        # Initialize pose encoder (8 pose features → 16-dim embedding)
+        self.pose_encoder = None
+        try:
+            from pose_encoder import PoseEncoder
+            self.pose_encoder = PoseEncoder()
+            self.pose_encoder.to(self.device)
+        except ImportError:
+            pass
+
         # Load or create fusion head (32 emotions, 9 families)
+        pose_dim = 16 if self.pose_encoder else 0
         self.fusion_head = FusionHead(
             text_dim=self.n_embd,
             biometric_dim=16,
-            pose_dim=0,
+            pose_dim=pose_dim,
             num_emotions=32,
             num_families=9
         )
 
         if classifier_checkpoint and Path(classifier_checkpoint).exists():
             state = torch.load(classifier_checkpoint, map_location=self.device, weights_only=False)
-            # Check if dimensions match
-            saved_text_dim = state['fusion_head']['shared.0.weight'].shape[1] - 16
+
+            # Determine pose_dim from checkpoint meta or by inspecting shapes
+            meta = state.get('meta', {})
+            saved_pose_dim = meta.get('pose_dim', None)
+            saved_input_dim = state['fusion_head']['shared.0.weight'].shape[1]
             saved_num_emotions = state['fusion_head']['emotion_classifier.weight'].shape[0]
+
+            if saved_pose_dim is None:
+                # Infer: input_dim = text_dim + biometric_dim + pose_dim
+                # Try to detect old 400-dim (no pose) vs new 416-dim (with pose)
+                saved_pose_dim = saved_input_dim - 16  # subtract biometric_dim
+                saved_text_dim = saved_pose_dim  # Initially assume no pose
+                # Check if the saved dim matches current text+bio+pose
+                if saved_input_dim == self.n_embd + 16:
+                    saved_pose_dim = 0
+                    saved_text_dim = self.n_embd
+                elif saved_input_dim == self.n_embd + 16 + pose_dim:
+                    saved_pose_dim = pose_dim
+                    saved_text_dim = self.n_embd
+                else:
+                    saved_text_dim = saved_input_dim - 16
+                    saved_pose_dim = 0
+            else:
+                saved_text_dim = saved_input_dim - 16 - saved_pose_dim
+
             if saved_text_dim != self.n_embd:
                 print(f"[EmotionAnalyzer] Dimension mismatch: saved={saved_text_dim}, current={self.n_embd}")
                 print(f"[EmotionAnalyzer] Recreating fusion head with new dimensions (requires retraining)")
             elif saved_num_emotions != 32:
                 print(f"[EmotionAnalyzer] Emotion count mismatch: saved={saved_num_emotions}, current=32")
                 print(f"[EmotionAnalyzer] Recreating fusion head (requires retraining)")
+            elif saved_pose_dim != pose_dim:
+                print(f"[EmotionAnalyzer] Pose dim mismatch: saved={saved_pose_dim}, current={pose_dim}")
+                print(f"[EmotionAnalyzer] Recreating fusion head (requires retraining)")
             else:
                 self.fusion_head.load_state_dict(state['fusion_head'])
                 self.biometric_encoder.load_state_dict(state['biometric_encoder'])
+                # Load pose encoder state if present
+                if self.pose_encoder and 'pose_encoder' in state:
+                    self.pose_encoder.load_state_dict(state['pose_encoder'])
 
         self.fusion_head.to(self.device)
         self.fusion_head.eval()
@@ -557,10 +595,11 @@ class MultimodalEmotionAnalyzer:
         self,
         text: str,
         biometrics: dict = None,
+        pose: dict = None,
         return_embedding: bool = False
     ) -> dict:
         """
-        Analyze emotional content of text with optional biometrics.
+        Analyze emotional content of text with optional biometrics and pose.
 
         Uses two-stage classification with confidence fallback.
 
@@ -580,12 +619,19 @@ class MultimodalEmotionAnalyzer:
             bio_embedding = None
             biometric_contribution = 0.0
 
+        # Get pose embedding
+        pose_embedding = None
+        if pose and self.pose_encoder:
+            pose_embedding = self.pose_encoder.encode(pose).to(self.device)
+
         # Two-stage classify with fallback
         with torch.no_grad():
             classification = self.fusion_head.classify_with_fallback(
-                text_embedding, bio_embedding
+                text_embedding, bio_embedding, pose_embedding
             )
-            emotion_probs, family_probs = self.fusion_head(text_embedding, bio_embedding)
+            emotion_probs, family_probs = self.fusion_head(
+                text_embedding, bio_embedding, pose_embedding
+            )
 
         emotion_probs_np = emotion_probs.squeeze(0).cpu().numpy()
 
