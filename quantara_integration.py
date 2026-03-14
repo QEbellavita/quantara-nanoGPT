@@ -220,7 +220,8 @@ class QuantaraEmotionGPT:
         self,
         user_message: str,
         detected_emotion: str = None,
-        biometric_data: dict = None
+        biometric_data: dict = None,
+        context: dict = None
     ) -> dict:
         """
         Generate empathetic coaching response.
@@ -259,13 +260,31 @@ class QuantaraEmotionGPT:
             elif hrv < 30:
                 biometric_insight = "Your HRV indicates some stress. A moment of mindfulness could help."
 
-        return {
+        result = {
             'response': response,
             'detected_emotion': detected_emotion,
             'biometric_insight': biometric_insight,
             'user_message': user_message,
             'model': 'quantara-emotion-gpt'
         }
+
+        # External context enrichment
+        if context:
+            try:
+                from external_context import ExternalContextProvider
+                ext = ExternalContextProvider()
+                family = self._emotion_to_family.get(detected_emotion, 'Neutral')
+                enrichment = ext.enrich_coaching(context, user_message, local_family=family)
+                if enrichment.get('weather_insight'):
+                    result['weather_insight'] = enrichment['weather_insight']
+                if enrichment.get('nutrition_insight'):
+                    result['nutrition_insight'] = enrichment['nutrition_insight']
+                if enrichment.get('cross_validation'):
+                    result['cross_validation'] = enrichment['cross_validation']
+            except ImportError:
+                pass
+
+        return result
 
     def get_therapy_technique(self, emotion: str) -> str:
         """

@@ -694,7 +694,9 @@ class EmotionGPTModel:
         message: str,
         emotion: str = None,
         biometric_data: dict = None,
-        use_model: bool = False
+        use_model: bool = False,
+        context: dict = None,
+        context_provider=None
     ) -> dict:
         """Generate empathetic coaching response (fast mode by default)"""
         import random
@@ -736,7 +738,17 @@ class EmotionGPTModel:
             elif hrv > 70:
                 biometric_insight = "Your high HRV indicates good vagal tone. You're in a regulated state."
 
-        return {
+        # External context enrichment (only when context is provided)
+        weather_insight = None
+        nutrition_insight = None
+        cross_validation = None
+        if context and context_provider:
+            enrichment = context_provider.enrich_coaching(context, message, local_family=family)
+            weather_insight = enrichment.get('weather_insight')
+            nutrition_insight = enrichment.get('nutrition_insight')
+            cross_validation = enrichment.get('cross_validation')
+
+        result = {
             'response': response,
             'detected_emotion': emotion,
             'family': family,
@@ -745,6 +757,15 @@ class EmotionGPTModel:
             'user_message': message,
             'model': 'quantara-emotion-gpt'
         }
+
+        if weather_insight is not None:
+            result['weather_insight'] = weather_insight
+        if nutrition_insight is not None:
+            result['nutrition_insight'] = nutrition_insight
+        if cross_validation is not None:
+            result['cross_validation'] = cross_validation
+
+        return result
 
     def get_therapy_technique(self, emotion: str) -> dict:
         """Get therapy technique, transition, and coaching prompt for emotion"""
@@ -870,7 +891,9 @@ def create_app(model: EmotionGPTModel) -> Flask:
                 message=message,
                 emotion=data.get('emotion'),
                 biometric_data=data.get('biometric'),
-                use_model=data.get('use_model', False)
+                use_model=data.get('use_model', False),
+                context=data.get('context'),
+                context_provider=context_provider
             )
 
             return jsonify({**result, 'status': 'success'})
