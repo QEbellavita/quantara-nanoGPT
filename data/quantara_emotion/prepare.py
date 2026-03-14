@@ -128,6 +128,21 @@ def load_emotion_datasets():
     else:
         print(f"  [-] Tweet data not found: {tweet_path}")
 
+    # Dataset 1b: GoEmotions (24K Reddit comments — pride, guilt, contempt, compassion, etc.)
+    goemotions_path = DOWNLOADS / "goemotions_extracted.csv"
+    if goemotions_path.exists():
+        df = pd.read_csv(goemotions_path)
+        count = 0
+        for _, row in df.iterrows():
+            text = str(row['text']).strip()
+            emotion = str(row['emotion']).strip().lower()
+            if text and len(text) > 10 and emotion in emotion_data:
+                emotion_data[emotion].append(text)
+                count += 1
+        print(f"  [+] Loaded GoEmotions: {count} samples")
+    else:
+        print(f"  [-] GoEmotions not found: {goemotions_path}")
+
     # Dataset 2: Emotion classify (6K)
     classify_path = DOWNLOADS / "Emotion_classify_Data.csv"
     if classify_path.exists():
@@ -348,6 +363,332 @@ def load_emotion_datasets():
 
     if stress_count > 0:
         print(f"  [+] Total stress-derived samples: {stress_count}")
+
+    # Dataset 5c: Smartwatch Health Monitoring (40K rows with real HRV, HR, Stress, Sleep)
+    smartwatch_path = Path("/Users/bel/Quantara-Frontend/ml-training/datasets/raw/Smartwatch_Health_Monitoring_Dataset_40000_Rows.csv")
+    if smartwatch_path.exists():
+        df = pd.read_csv(smartwatch_path)
+        sw_count = 0
+
+        # Sample max 5000 rows to keep balanced
+        if len(df) > 5000:
+            df = df.sample(n=5000, random_state=42)
+
+        sw_templates = {
+            'overwhelmed': [
+                "Heart rate {hr} bpm, HRV {hrv}ms, stress level {stress:.1f}/10. Everything is crashing down at once and I can't breathe.",
+                "Heart rate {hr} bpm, HRV {hrv}ms, stress level {stress:.1f}/10. Too many demands, too little energy — I'm breaking.",
+                "Heart rate {hr} bpm, HRV {hrv}ms, stress level {stress:.1f}/10. My body is screaming stop but the world won't pause.",
+                "Heart rate {hr} bpm, HRV {hrv}ms, stress level {stress:.1f}/10. I feel buried under the weight of everything right now.",
+            ],
+            'stressed': [
+                "Heart rate {hr} bpm, HRV {hrv}ms, stress level {stress:.1f}/10. The pressure is building and I can feel it in my shoulders.",
+                "Heart rate {hr} bpm, HRV {hrv}ms, stress level {stress:.1f}/10. Tension is mounting with every passing hour today.",
+                "Heart rate {hr} bpm, HRV {hrv}ms, stress level {stress:.1f}/10. My jaw is clenched and my mind won't stop racing.",
+                "Heart rate {hr} bpm, HRV {hrv}ms, stress level {stress:.1f}/10. The stress is like a constant hum I can't turn off.",
+            ],
+            'anxiety': [
+                "Heart rate {hr} bpm, HRV {hrv}ms, stress level {stress:.1f}/10. Worry is creeping in and settling in my chest.",
+                "Heart rate {hr} bpm, HRV {hrv}ms, stress level {stress:.1f}/10. I keep anticipating something going wrong.",
+                "Heart rate {hr} bpm, HRV {hrv}ms, stress level {stress:.1f}/10. An uneasy feeling follows me through the day.",
+                "Heart rate {hr} bpm, HRV {hrv}ms, stress level {stress:.1f}/10. My thoughts spiral into what-if scenarios I can't control.",
+            ],
+            'calm': [
+                "Heart rate {hr} bpm, HRV {hrv}ms, stress level {stress:.1f}/10. Feeling centered and grounded right now.",
+                "Heart rate {hr} bpm, HRV {hrv}ms, stress level {stress:.1f}/10. A steady, peaceful rhythm in my body today.",
+                "Heart rate {hr} bpm, HRV {hrv}ms, stress level {stress:.1f}/10. Everything feels balanced and manageable.",
+                "Heart rate {hr} bpm, HRV {hrv}ms, stress level {stress:.1f}/10. My breathing is slow and my mind is quiet.",
+            ],
+            'mindfulness': [
+                "Heart rate {hr} bpm, HRV {hrv}ms, stress level {stress:.1f}/10. Present in this moment, noticing peace and stillness.",
+                "Heart rate {hr} bpm, HRV {hrv}ms, stress level {stress:.1f}/10. Fully aware of each breath, each sensation, just being.",
+                "Heart rate {hr} bpm, HRV {hrv}ms, stress level {stress:.1f}/10. No judgment, just observing — the world is quiet inside.",
+                "Heart rate {hr} bpm, HRV {hrv}ms, stress level {stress:.1f}/10. Grounded in the here and now, letting thoughts drift past.",
+            ],
+            'relief': [
+                "Heart rate {hr} bpm, HRV {hrv}ms, stress level {stress:.1f}/10. The tension has finally released and I can breathe again.",
+                "Heart rate {hr} bpm, HRV {hrv}ms, stress level {stress:.1f}/10. A wave of relief — the storm has passed.",
+                "Heart rate {hr} bpm, HRV {hrv}ms, stress level {stress:.1f}/10. My body is unwinding and peace is settling in.",
+                "Heart rate {hr} bpm, HRV {hrv}ms, stress level {stress:.1f}/10. Everything eased up and I feel light again.",
+            ],
+            'resilience': [
+                "Heart rate {hr} bpm, HRV {hrv}ms, stress level {stress:.1f}/10. My body is strong and adaptable — I can handle this.",
+                "Heart rate {hr} bpm, HRV {hrv}ms, stress level {stress:.1f}/10. Recovery is happening — I bounce back from hard days.",
+                "Heart rate {hr} bpm, HRV {hrv}ms, stress level {stress:.1f}/10. Steady signals remind me I've survived worse.",
+                "Heart rate {hr} bpm, HRV {hrv}ms, stress level {stress:.1f}/10. Strength flows through me even after tough stretches.",
+            ],
+            'gratitude': [
+                "Heart rate {hr} bpm, HRV {hrv}ms, stress level {stress:.1f}/10. Grateful for this well-rested, restored feeling.",
+                "Heart rate {hr} bpm, HRV {hrv}ms, stress level {stress:.1f}/10. Thankful my body is healthy and at peace today.",
+                "Heart rate {hr} bpm, HRV {hrv}ms, stress level {stress:.1f}/10. Appreciating the calm after so many restful hours.",
+                "Heart rate {hr} bpm, HRV {hrv}ms, stress level {stress:.1f}/10. Deep gratitude for the gift of recovery and rest.",
+            ],
+        }
+
+        for _, row in df.iterrows():
+            try:
+                hr = float(row.get('Avg_Heart_Rate', 0))
+                hrv = float(row.get('HRV', 0))
+                stress = float(row.get('Stress_Level', 0))
+                sleep = float(row.get('Sleep_Hours', 0))
+            except (ValueError, TypeError):
+                continue
+
+            # Determine emotion(s) from multiple signals
+            emotions_to_add = []
+
+            # Primary mapping: stress level (1-10 scale)
+            if stress >= 8:
+                emotions_to_add.append('overwhelmed')
+            elif stress >= 6:
+                emotions_to_add.append('stressed')
+            elif stress >= 4:
+                emotions_to_add.append('anxiety')
+            elif stress >= 2.5:
+                emotions_to_add.append('calm')
+            else:
+                emotions_to_add.append('mindfulness')
+                emotions_to_add.append('relief')
+
+            # Secondary mapping: HRV signal
+            if hrv > 80:
+                for e in ['calm', 'mindfulness', 'resilience']:
+                    if e not in emotions_to_add:
+                        emotions_to_add.append(e)
+            elif hrv < 35:
+                for e in ['stressed', 'anxiety', 'overwhelmed']:
+                    if e not in emotions_to_add:
+                        emotions_to_add.append(e)
+
+            # Tertiary mapping: sleep quality
+            if sleep < 5:
+                for e in ['stressed', 'overwhelmed']:
+                    if e not in emotions_to_add:
+                        emotions_to_add.append(e)
+            elif sleep > 7.5:
+                for e in ['calm', 'relief', 'gratitude']:
+                    if e not in emotions_to_add:
+                        emotions_to_add.append(e)
+
+            # Generate one sample per emotion for this row
+            for emotion in emotions_to_add:
+                templates = sw_templates.get(emotion)
+                if templates:
+                    template = random.choice(templates)
+                    text = template.format(hr=int(hr), hrv=int(hrv), stress=stress)
+                    if emotion in emotion_data:
+                        emotion_data[emotion].append(text)
+                        sw_count += 1
+
+        print(f"  [+] Loaded Smartwatch Health Monitoring: {sw_count} biometric-enriched samples")
+    else:
+        print(f"  [-] Smartwatch Health Monitoring not found: {smartwatch_path}")
+
+    # Dataset 5d: Empatica E4 Wearable Stress (2112 rows with HR, HRV, EDA, temp)
+    empatica_path = Path("/Users/bel/Quantara-Frontend/ml-training/datasets/processed/empatica_stress_processed.csv")
+    if empatica_path.exists():
+        df = pd.read_csv(empatica_path)
+        emp_count = 0
+
+        emp_templates = {
+            'overwhelmed': [
+                "Wearable readings: HR {hr:.0f}bpm, HRV-RMSSD {hrv:.1f}ms, EDA {eda:.2f}\u00b5S, temp {temp:.1f}\u00b0C. Everything is too much — my body is in overdrive.",
+                "Wearable readings: HR {hr:.0f}bpm, HRV-RMSSD {hrv:.1f}ms, EDA {eda:.2f}\u00b5S, temp {temp:.1f}\u00b0C. I can't process anything more — system overload.",
+                "Wearable readings: HR {hr:.0f}bpm, HRV-RMSSD {hrv:.1f}ms, EDA {eda:.2f}\u00b5S, temp {temp:.1f}\u00b0C. Maxed out on every level — need to shut down.",
+                "Wearable readings: HR {hr:.0f}bpm, HRV-RMSSD {hrv:.1f}ms, EDA {eda:.2f}\u00b5S, temp {temp:.1f}\u00b0C. Drowning in demands, my nervous system is screaming.",
+            ],
+            'fear': [
+                "Wearable readings: HR {hr:.0f}bpm, HRV-RMSSD {hrv:.1f}ms, EDA {eda:.2f}\u00b5S, temp {temp:.1f}\u00b0C. Fear grips me — fight or flight fully activated.",
+                "Wearable readings: HR {hr:.0f}bpm, HRV-RMSSD {hrv:.1f}ms, EDA {eda:.2f}\u00b5S, temp {temp:.1f}\u00b0C. Something feels deeply wrong — my body knows before my mind.",
+                "Wearable readings: HR {hr:.0f}bpm, HRV-RMSSD {hrv:.1f}ms, EDA {eda:.2f}\u00b5S, temp {temp:.1f}\u00b0C. A primal dread floods through me and I can't shake it.",
+                "Wearable readings: HR {hr:.0f}bpm, HRV-RMSSD {hrv:.1f}ms, EDA {eda:.2f}\u00b5S, temp {temp:.1f}\u00b0C. Every nerve is on edge — the fear is overwhelming.",
+            ],
+            'anxiety': [
+                "Wearable readings: HR {hr:.0f}bpm, HRV-RMSSD {hrv:.1f}ms, EDA {eda:.2f}\u00b5S, temp {temp:.1f}\u00b0C. Anxious energy buzzing through my body won't stop.",
+                "Wearable readings: HR {hr:.0f}bpm, HRV-RMSSD {hrv:.1f}ms, EDA {eda:.2f}\u00b5S, temp {temp:.1f}\u00b0C. Can't sit still — the worry is physical now.",
+                "Wearable readings: HR {hr:.0f}bpm, HRV-RMSSD {hrv:.1f}ms, EDA {eda:.2f}\u00b5S, temp {temp:.1f}\u00b0C. My skin is tingling and my thoughts race ahead.",
+                "Wearable readings: HR {hr:.0f}bpm, HRV-RMSSD {hrv:.1f}ms, EDA {eda:.2f}\u00b5S, temp {temp:.1f}\u00b0C. Elevated arousal with persistent unease — anxiety in full swing.",
+            ],
+            'stressed': [
+                "Wearable readings: HR {hr:.0f}bpm, HRV-RMSSD {hrv:.1f}ms, EDA {eda:.2f}\u00b5S, temp {temp:.1f}\u00b0C. The stress is registered in every signal my body sends.",
+                "Wearable readings: HR {hr:.0f}bpm, HRV-RMSSD {hrv:.1f}ms, EDA {eda:.2f}\u00b5S, temp {temp:.1f}\u00b0C. Moderate tension — I feel it accumulating through the day.",
+                "Wearable readings: HR {hr:.0f}bpm, HRV-RMSSD {hrv:.1f}ms, EDA {eda:.2f}\u00b5S, temp {temp:.1f}\u00b0C. Cortisol running higher than baseline — the strain is real.",
+                "Wearable readings: HR {hr:.0f}bpm, HRV-RMSSD {hrv:.1f}ms, EDA {eda:.2f}\u00b5S, temp {temp:.1f}\u00b0C. My body is wound tight with unresolved pressure.",
+            ],
+            'excitement': [
+                "Wearable readings: HR {hr:.0f}bpm, HRV-RMSSD {hrv:.1f}ms, EDA {eda:.2f}\u00b5S, temp {temp:.1f}\u00b0C. Pumped up and ready to go — this energy is electric!",
+                "Wearable readings: HR {hr:.0f}bpm, HRV-RMSSD {hrv:.1f}ms, EDA {eda:.2f}\u00b5S, temp {temp:.1f}\u00b0C. High arousal, zero stress — pure excitement flowing through me.",
+                "Wearable readings: HR {hr:.0f}bpm, HRV-RMSSD {hrv:.1f}ms, EDA {eda:.2f}\u00b5S, temp {temp:.1f}\u00b0C. My heart is racing with anticipation and joy.",
+                "Wearable readings: HR {hr:.0f}bpm, HRV-RMSSD {hrv:.1f}ms, EDA {eda:.2f}\u00b5S, temp {temp:.1f}\u00b0C. Everything feels alive and thrilling right now.",
+            ],
+            'enthusiasm': [
+                "Wearable readings: HR {hr:.0f}bpm, HRV-RMSSD {hrv:.1f}ms, EDA {eda:.2f}\u00b5S, temp {temp:.1f}\u00b0C. Fired up and eager — can't wait to dive in!",
+                "Wearable readings: HR {hr:.0f}bpm, HRV-RMSSD {hrv:.1f}ms, EDA {eda:.2f}\u00b5S, temp {temp:.1f}\u00b0C. Positive activation — I'm fully engaged and motivated.",
+                "Wearable readings: HR {hr:.0f}bpm, HRV-RMSSD {hrv:.1f}ms, EDA {eda:.2f}\u00b5S, temp {temp:.1f}\u00b0C. This buzzing energy is driving me forward with purpose.",
+                "Wearable readings: HR {hr:.0f}bpm, HRV-RMSSD {hrv:.1f}ms, EDA {eda:.2f}\u00b5S, temp {temp:.1f}\u00b0C. Enthusiastic arousal — my body says let's go!",
+            ],
+            'calm': [
+                "Wearable readings: HR {hr:.0f}bpm, HRV-RMSSD {hrv:.1f}ms, EDA {eda:.2f}\u00b5S, temp {temp:.1f}\u00b0C. Relaxed and at ease — parasympathetic dominance.",
+                "Wearable readings: HR {hr:.0f}bpm, HRV-RMSSD {hrv:.1f}ms, EDA {eda:.2f}\u00b5S, temp {temp:.1f}\u00b0C. Low stress, low arousal — a perfect restful state.",
+                "Wearable readings: HR {hr:.0f}bpm, HRV-RMSSD {hrv:.1f}ms, EDA {eda:.2f}\u00b5S, temp {temp:.1f}\u00b0C. My nervous system is settled and peaceful.",
+                "Wearable readings: HR {hr:.0f}bpm, HRV-RMSSD {hrv:.1f}ms, EDA {eda:.2f}\u00b5S, temp {temp:.1f}\u00b0C. Everything is quiet inside — truly calm.",
+            ],
+            'relief': [
+                "Wearable readings: HR {hr:.0f}bpm, HRV-RMSSD {hrv:.1f}ms, EDA {eda:.2f}\u00b5S, temp {temp:.1f}\u00b0C. The tension dropped and relief washed through me.",
+                "Wearable readings: HR {hr:.0f}bpm, HRV-RMSSD {hrv:.1f}ms, EDA {eda:.2f}\u00b5S, temp {temp:.1f}\u00b0C. Stress signals fading — finally letting go.",
+                "Wearable readings: HR {hr:.0f}bpm, HRV-RMSSD {hrv:.1f}ms, EDA {eda:.2f}\u00b5S, temp {temp:.1f}\u00b0C. Recovery mode activated — the worst is over.",
+                "Wearable readings: HR {hr:.0f}bpm, HRV-RMSSD {hrv:.1f}ms, EDA {eda:.2f}\u00b5S, temp {temp:.1f}\u00b0C. A deep exhale — relief flowing through every cell.",
+            ],
+            'mindfulness': [
+                "Wearable readings: HR {hr:.0f}bpm, HRV-RMSSD {hrv:.1f}ms, EDA {eda:.2f}\u00b5S, temp {temp:.1f}\u00b0C. Present and aware — simply observing without reacting.",
+                "Wearable readings: HR {hr:.0f}bpm, HRV-RMSSD {hrv:.1f}ms, EDA {eda:.2f}\u00b5S, temp {temp:.1f}\u00b0C. Each signal is just information — no judgment, just awareness.",
+                "Wearable readings: HR {hr:.0f}bpm, HRV-RMSSD {hrv:.1f}ms, EDA {eda:.2f}\u00b5S, temp {temp:.1f}\u00b0C. Tuned into my body's rhythms with gentle attention.",
+                "Wearable readings: HR {hr:.0f}bpm, HRV-RMSSD {hrv:.1f}ms, EDA {eda:.2f}\u00b5S, temp {temp:.1f}\u00b0C. Mindfully resting in baseline — the body knows peace.",
+            ],
+            'boredom': [
+                "Wearable readings: HR {hr:.0f}bpm, HRV-RMSSD {hrv:.1f}ms, EDA {eda:.2f}\u00b5S, temp {temp:.1f}\u00b0C. Flat arousal, flat engagement — nothing is stimulating.",
+                "Wearable readings: HR {hr:.0f}bpm, HRV-RMSSD {hrv:.1f}ms, EDA {eda:.2f}\u00b5S, temp {temp:.1f}\u00b0C. Low everything — just existing without interest.",
+                "Wearable readings: HR {hr:.0f}bpm, HRV-RMSSD {hrv:.1f}ms, EDA {eda:.2f}\u00b5S, temp {temp:.1f}\u00b0C. Understimulated and restless — need something to change.",
+                "Wearable readings: HR {hr:.0f}bpm, HRV-RMSSD {hrv:.1f}ms, EDA {eda:.2f}\u00b5S, temp {temp:.1f}\u00b0C. The monotony is reflected in every flat reading.",
+            ],
+        }
+
+        for _, row in df.iterrows():
+            try:
+                hr = float(row.get('hr_mean', 0))
+                hrv = float(row.get('hrv_rmssd', 0))
+                eda = float(row.get('eda_mean', 0))
+                temp = float(row.get('temp_mean', 0))
+                stress_lvl = str(row.get('stress_level', '')).strip().lower()
+                arousal_lvl = str(row.get('arousal_level', '')).strip().lower()
+            except (ValueError, TypeError):
+                continue
+
+            # Map (stress_level, arousal_level) to emotions via string matching
+            emotions_to_add = []
+            if stress_lvl == 'high' and arousal_lvl == 'high':
+                emotions_to_add = ['overwhelmed', 'fear']
+            elif stress_lvl == 'moderate' and arousal_lvl == 'high':
+                emotions_to_add = ['anxiety', 'stressed']
+            elif stress_lvl == 'low' and arousal_lvl == 'high':
+                emotions_to_add = ['excitement', 'enthusiasm']
+            elif stress_lvl == 'low' and arousal_lvl == 'medium':
+                emotions_to_add = ['calm', 'relief']
+            elif stress_lvl == 'low' and arousal_lvl == 'low':
+                emotions_to_add = ['mindfulness', 'boredom']
+
+            for emotion in emotions_to_add:
+                templates = emp_templates.get(emotion)
+                if templates:
+                    template = random.choice(templates)
+                    text = template.format(hr=hr, hrv=hrv, eda=eda, temp=temp)
+                    if emotion in emotion_data:
+                        emotion_data[emotion].append(text)
+                        emp_count += 1
+
+        print(f"  [+] Loaded Empatica E4 Wearable Stress: {emp_count} biometric-enriched samples")
+    else:
+        print(f"  [-] Empatica E4 Wearable Stress not found: {empatica_path}")
+
+    # Dataset 5e: WESAD Processed (1802 rows with ECG, EDA, EMG)
+    wesad_path = Path("/Users/bel/Quantara-Frontend/ml-training/datasets/processed/wesad_full_processed.csv")
+    if wesad_path.exists():
+        df = pd.read_csv(wesad_path)
+        wesad_count = 0
+
+        wesad_templates = {
+            'neutral': [
+                "Physiological state: ECG {ecg:.3f}, EDA {eda:.3f}\u00b5S, EMG {emg:.3f}. Baseline state — nothing notable, just steady.",
+                "Physiological state: ECG {ecg:.3f}, EDA {eda:.3f}\u00b5S, EMG {emg:.3f}. Neutral equilibrium — neither stressed nor excited.",
+                "Physiological state: ECG {ecg:.3f}, EDA {eda:.3f}\u00b5S, EMG {emg:.3f}. A flat, unremarkable emotional state.",
+                "Physiological state: ECG {ecg:.3f}, EDA {eda:.3f}\u00b5S, EMG {emg:.3f}. Even-keeled and emotionally neutral right now.",
+            ],
+            'calm': [
+                "Physiological state: ECG {ecg:.3f}, EDA {eda:.3f}\u00b5S, EMG {emg:.3f}. Relaxed baseline — my body is at rest.",
+                "Physiological state: ECG {ecg:.3f}, EDA {eda:.3f}\u00b5S, EMG {emg:.3f}. Calm and composed — all signals steady.",
+                "Physiological state: ECG {ecg:.3f}, EDA {eda:.3f}\u00b5S, EMG {emg:.3f}. Peaceful regulation — parasympathetic in control.",
+                "Physiological state: ECG {ecg:.3f}, EDA {eda:.3f}\u00b5S, EMG {emg:.3f}. A settled, grounded sense of calm.",
+            ],
+            'joy': [
+                "Physiological state: ECG {ecg:.3f}, EDA {eda:.3f}\u00b5S, EMG {emg:.3f}. Laughing and delighted — pure joy in this moment.",
+                "Physiological state: ECG {ecg:.3f}, EDA {eda:.3f}\u00b5S, EMG {emg:.3f}. Amusement lights up my whole system — genuine happiness.",
+                "Physiological state: ECG {ecg:.3f}, EDA {eda:.3f}\u00b5S, EMG {emg:.3f}. Grinning ear to ear — this feeling is wonderful.",
+                "Physiological state: ECG {ecg:.3f}, EDA {eda:.3f}\u00b5S, EMG {emg:.3f}. Joy bubbles up — my body reflects the lightness inside.",
+            ],
+            'fun': [
+                "Physiological state: ECG {ecg:.3f}, EDA {eda:.3f}\u00b5S, EMG {emg:.3f}. Having a great time — this is genuinely fun.",
+                "Physiological state: ECG {ecg:.3f}, EDA {eda:.3f}\u00b5S, EMG {emg:.3f}. Amused and entertained — loving every second of this.",
+                "Physiological state: ECG {ecg:.3f}, EDA {eda:.3f}\u00b5S, EMG {emg:.3f}. Light-hearted amusement — my body relaxes into the fun.",
+                "Physiological state: ECG {ecg:.3f}, EDA {eda:.3f}\u00b5S, EMG {emg:.3f}. Playful energy — everything feels lighter and brighter.",
+            ],
+            'stressed': [
+                "Physiological state: ECG {ecg:.3f}, EDA {eda:.3f}\u00b5S, EMG {emg:.3f}. Stress markers elevated — my body is under pressure.",
+                "Physiological state: ECG {ecg:.3f}, EDA {eda:.3f}\u00b5S, EMG {emg:.3f}. Tense and on edge — the stress is physiologically obvious.",
+                "Physiological state: ECG {ecg:.3f}, EDA {eda:.3f}\u00b5S, EMG {emg:.3f}. Sympathetic activation — cortisol flooding my system.",
+                "Physiological state: ECG {ecg:.3f}, EDA {eda:.3f}\u00b5S, EMG {emg:.3f}. Every physiological marker confirms: I'm stressed.",
+            ],
+            'anxiety': [
+                "Physiological state: ECG {ecg:.3f}, EDA {eda:.3f}\u00b5S, EMG {emg:.3f}. Anxious activation — my body anticipates threat.",
+                "Physiological state: ECG {ecg:.3f}, EDA {eda:.3f}\u00b5S, EMG {emg:.3f}. Worry manifests in every biosignal — anxiety is real.",
+                "Physiological state: ECG {ecg:.3f}, EDA {eda:.3f}\u00b5S, EMG {emg:.3f}. Heightened vigilance — my nervous system won't calm down.",
+                "Physiological state: ECG {ecg:.3f}, EDA {eda:.3f}\u00b5S, EMG {emg:.3f}. The anxiety shows in my skin conductance and heart rhythm.",
+            ],
+            'relief': [
+                "Physiological state: ECG {ecg:.3f}, EDA {eda:.3f}\u00b5S, EMG {emg:.3f}. Returning to baseline — relief is settling in.",
+                "Physiological state: ECG {ecg:.3f}, EDA {eda:.3f}\u00b5S, EMG {emg:.3f}. The stress response is fading — finally some relief.",
+                "Physiological state: ECG {ecg:.3f}, EDA {eda:.3f}\u00b5S, EMG {emg:.3f}. My body is deactivating — the pressure has lifted.",
+                "Physiological state: ECG {ecg:.3f}, EDA {eda:.3f}\u00b5S, EMG {emg:.3f}. Calm after the storm — relief washes through me.",
+            ],
+            'overwhelmed': [
+                "Physiological state: ECG {ecg:.3f}, EDA {eda:.3f}\u00b5S, EMG {emg:.3f}. Maximum stress response — completely overwhelmed.",
+                "Physiological state: ECG {ecg:.3f}, EDA {eda:.3f}\u00b5S, EMG {emg:.3f}. Every signal is maxed — I can't take any more.",
+                "Physiological state: ECG {ecg:.3f}, EDA {eda:.3f}\u00b5S, EMG {emg:.3f}. Physiological overload — my system is breaking down.",
+                "Physiological state: ECG {ecg:.3f}, EDA {eda:.3f}\u00b5S, EMG {emg:.3f}. Beyond stressed — fully overwhelmed and shutting down.",
+            ],
+        }
+
+        for _, row in df.iterrows():
+            try:
+                ecg = float(row.get('ecg_mean', 0))
+                eda = float(row.get('eda_mean', 0))
+                emg = float(row.get('emg_mean', 0))
+                stress_lvl = int(row.get('stress_level', 0))
+                emotion_state = int(row.get('emotion_state', 0))
+            except (ValueError, TypeError):
+                continue
+
+            emotions_to_add = []
+
+            # Map emotion_state
+            if emotion_state == 0:
+                emotions_to_add.extend(['neutral', 'calm'])
+            elif emotion_state == 1:
+                emotions_to_add.extend(['joy', 'fun'])
+            elif emotion_state == 4:
+                emotions_to_add.extend(['stressed', 'anxiety'])
+
+            # Map stress_level
+            if stress_lvl == 0:
+                for e in ['calm', 'relief']:
+                    if e not in emotions_to_add:
+                        emotions_to_add.append(e)
+            elif stress_lvl == 2:
+                for e in ['stressed', 'overwhelmed']:
+                    if e not in emotions_to_add:
+                        emotions_to_add.append(e)
+
+            for emotion in emotions_to_add:
+                templates = wesad_templates.get(emotion)
+                if templates:
+                    template = random.choice(templates)
+                    text = template.format(ecg=ecg, eda=eda, emg=emg)
+                    if emotion in emotion_data:
+                        emotion_data[emotion].append(text)
+                        wesad_count += 1
+
+        print(f"  [+] Loaded WESAD Processed: {wesad_count} biometric-enriched samples")
+    else:
+        print(f"  [-] WESAD Processed not found: {wesad_path}")
 
     # Dataset 6: EEG cognitive dataset — anxiety, calm, stressed
     eeg_path = DOWNLOADS / "eeg_cognitive_dataset.csv"
