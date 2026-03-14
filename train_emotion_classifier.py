@@ -22,6 +22,7 @@ import argparse
 import pickle
 import random
 from pathlib import Path
+from collections import defaultdict
 
 import numpy as np
 import pandas as pd
@@ -107,6 +108,158 @@ def generate_synthetic_biometrics(emotion: str) -> dict:
         'hrv': random.uniform(*ranges['hrv']),
         'eda': random.uniform(*ranges['eda']),
     }
+
+
+# ─── Real Biometric Data Loader ─────────────────────────────────────────────
+
+class RealBiometricSampler:
+    """Sample real biometric values from heart_rate_emotion_dataset.csv and
+    stress level CSVs instead of purely synthetic ranges.
+
+    Falls back to synthetic generation when real data is unavailable for
+    a given emotion.
+    """
+
+    def __init__(self, downloads_dir: Path):
+        self.real_hr_by_emotion = defaultdict(list)
+        self.real_stress_scores = defaultdict(list)
+        self._load_heart_rate_data(downloads_dir)
+        self._load_stress_data(downloads_dir)
+
+        total = sum(len(v) for v in self.real_hr_by_emotion.values())
+        stress_total = sum(len(v) for v in self.real_stress_scores.values())
+        print(f"  Real biometric sampler: {total} HR readings, {stress_total} stress scores")
+
+    def _load_heart_rate_data(self, downloads_dir: Path):
+        """Load real heart rate values grouped by emotion."""
+        hr_path = downloads_dir / "heart_rate_emotion_dataset.csv"
+        if not hr_path.exists():
+            print(f"  [-] heart_rate_emotion_dataset.csv not found")
+            return
+
+        df = pd.read_csv(hr_path)
+        hr_col = 'HeartRate' if 'HeartRate' in df.columns else None
+        label_col = 'Emotion' if 'Emotion' in df.columns else None
+
+        if not hr_col or not label_col:
+            print(f"  [-] HR dataset missing expected columns: {list(df.columns)}")
+            return
+
+        hr_map = {
+            'happy': 'joy', 'sad': 'sadness', 'disgust': 'disgust',
+            'anger': 'anger', 'fear': 'fear', 'surprise': 'surprise',
+            'neutral': 'neutral',
+        }
+
+        for _, row in df.iterrows():
+            raw = str(row[label_col]).strip().lower()
+            emotion = hr_map.get(raw)
+            if emotion:
+                try:
+                    hr = float(row[hr_col])
+                    if 40 <= hr <= 180:
+                        self.real_hr_by_emotion[emotion].append(hr)
+                except (ValueError, TypeError):
+                    pass
+
+        # Propagate family-level HR data to sub-emotions that lack real data
+        family_propagation = {
+            'joy': ['excitement', 'enthusiasm', 'fun', 'gratitude', 'pride'],
+            'sadness': ['grief', 'boredom', 'nostalgia'],
+            'anger': ['frustration', 'hate', 'contempt', 'jealousy'],
+            'fear': ['anxiety', 'worry', 'overwhelmed', 'stressed'],
+        }
+        for source, targets in family_propagation.items():
+            if source in self.real_hr_by_emotion:
+                for target in targets:
+                    if not self.real_hr_by_emotion[target]:
+                        self.real_hr_by_emotion[target] = list(self.real_hr_by_emotion[source])
+
+        for emo, vals in self.real_hr_by_emotion.items():
+            if vals:
+                print(f"    HR [{emo}]: {len(vals)} readings, range {min(vals):.0f}-{max(vals):.0f} bpm")
+
+    def _load_stress_data(self, downloads_dir: Path):
+        """Load stress assessment scores and map to emotion-relevant stress levels."""
+        for fname in ['Stress_Level_v1.csv', 'Stress_Level_v2.csv']:
+            path = downloads_dir / fname
+            if not path.exists():
+                continue
+
+            df = pd.read_csv(path)
+            task_cols = [c for c in df.columns if c not in ['Unnamed: 0'] and c != df.columns[0]]
+
+            for _, row in df.iterrows():
+                for task in task_cols:
+                    try:
+                        score = float(row[task])
+                    except (ValueError, TypeError):
+                        continue
+
+                    # Map score to emotion categories
+                    if score >= 7.0:
+                        self.real_stress_scores['overwhelmed'].append(score)
+                        self.real_stress_scores['stressed'].append(score)
+                    elif score >= 5.0:
+                        self.real_stress_scores['stressed'].append(score)
+                        self.real_stress_scores['anxiety'].append(score)
+                    elif score >= 3.0:
+                        self.real_stress_scores['anxiety'].append(score)
+                        self.real_stress_scores['worry'].append(score)
+                    elif score >= 1.5:
+                        self.real_stress_scores['calm'].append(score)
+                    else:
+                        self.real_stress_scores['relief'].append(score)
+                        self.real_stress_scores['calm'].append(score)
+                        self.real_stress_scores['mindfulness'].append(score)
+
+    def sample(self, emotion: str) -> dict:
+        """Get biometric readings — real when available, synthetic as fallback.
+
+        Uses real HR data + derives HRV/EDA from stress scores when available,
+        otherwise falls back to the synthetic BIOMETRIC_RANGES.
+        """
+        hr_pool = self.real_hr_by_emotion.get(emotion)
+        stress_pool = self.real_stress_scores.get(emotion)
+        ranges = BIOMETRIC_RANGES.get(emotion, BIOMETRIC_RANGES['neutral'])
+
+        # Heart rate: prefer real data
+        if hr_pool:
+            heart_rate = random.choice(hr_pool)
+            # Add small jitter for diversity (±3 bpm)
+            heart_rate += random.gauss(0, 1.5)
+            heart_rate = max(40, min(180, heart_rate))
+        else:
+            heart_rate = random.uniform(*ranges['hr'])
+
+        # HRV: derive from stress scores when available (inverse relationship)
+        if stress_pool:
+            stress_score = random.choice(stress_pool)
+            # Higher stress → lower HRV (inverse mapping, 0-9 scale → HRV)
+            # HRV typically 15-95ms, stressed people have lower HRV
+            hrv = 95 - (stress_score / 9.0) * 70 + random.gauss(0, 5)
+            hrv = max(10, min(100, hrv))
+        else:
+            hrv = random.uniform(*ranges['hrv'])
+
+        # EDA: derive from stress + HR when available
+        if stress_pool or hr_pool:
+            # EDA correlates with arousal — high HR and high stress → high EDA
+            base_eda = random.uniform(*ranges['eda'])
+            if hr_pool and heart_rate > 90:
+                base_eda *= 1.2  # Higher HR → slightly elevated EDA
+            if stress_pool:
+                stress_score = random.choice(stress_pool)
+                base_eda += (stress_score / 9.0) * 2.0  # Stress adds EDA
+            eda = max(0.5, min(20, base_eda))
+        else:
+            eda = random.uniform(*ranges['eda'])
+
+        return {
+            'heart_rate': heart_rate,
+            'hrv': hrv,
+            'eda': eda,
+        }
 
 
 class EmotionDataset(Dataset):
@@ -395,19 +548,22 @@ def train(args):
     # Initialize models first
     bio_encoder = BiometricEncoder(output_dim=16).to(device)
 
-    # Generate synthetic biometrics
-    print("\n  Generating synthetic biometrics...")
+    # Load real biometric data (falls back to synthetic when unavailable)
+    print("\n  Loading real biometric data...")
+    bio_sampler = RealBiometricSampler(Path(args.data_dir))
+
+    print("\n  Generating biometric features (real + synthetic hybrid)...")
 
     train_bio_features = []
     for emotion in train_emotions:
-        bio = generate_synthetic_biometrics(emotion)
+        bio = bio_sampler.sample(emotion)
         features = bio_encoder._extract_features(bio).numpy()
         train_bio_features.append(features)
     train_bio_features = np.array(train_bio_features)
 
     val_bio_features = []
     for emotion in val_emotions:
-        bio = generate_synthetic_biometrics(emotion)
+        bio = bio_sampler.sample(emotion)
         features = bio_encoder._extract_features(bio).numpy()
         val_bio_features.append(features)
     val_bio_features = np.array(val_bio_features)
@@ -570,7 +726,7 @@ if __name__ == '__main__':
     parser.add_argument('--gpt-checkpoint', default='out-quantara-emotion-fast/ckpt.pt',
                         help='Path to nanoGPT checkpoint (if not using sentence-transformer)')
     # Data & training
-    parser.add_argument('--data-dir', default='.')
+    parser.add_argument('--data-dir', default=os.path.expanduser('~/Downloads'))
     parser.add_argument('--epochs', type=int, default=20)
     parser.add_argument('--batch-size', type=int, default=64)
     parser.add_argument('--lr', type=float, default=1e-3)

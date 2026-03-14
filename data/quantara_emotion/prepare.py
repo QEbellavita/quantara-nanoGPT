@@ -19,8 +19,9 @@ Data Sources:
 - Emotion_classify_Data.csv (6K comments)
 - text.csv (416K text samples)
 - archive (4) 3 - Train/test/val emotion text
-- heart_rate_emotion_dataset.csv — disgust (14K)
+- heart_rate_emotion_dataset.csv — disgust (14K) + real biometric HR data
 - EEG cognitive dataset — anxiety, calm, stressed (~500 each)
+- Stress_Level_v1.csv / v2.csv — real stress assessment data (biometric-enriched)
 
 Taxonomy: 9 families, 32 emotions (see EMOTION_FAMILIES)
 """
@@ -184,24 +185,30 @@ def load_emotion_datasets():
                     count += 1
             print(f"  [+] Loaded {csv_name}: {count} samples")
 
-    # Dataset 5: Heart rate emotion dataset — disgust + label mappings
+    # Dataset 5: Heart rate emotion dataset — real biometric HR data + emotion labels
     hr_path = DOWNLOADS / "heart_rate_emotion_dataset.csv"
     if hr_path.exists():
         df = pd.read_csv(hr_path)
-        label_col = 'label' if 'label' in df.columns else 'emotion'
+        label_col = 'Emotion' if 'Emotion' in df.columns else ('label' if 'label' in df.columns else 'emotion')
+        hr_col = 'HeartRate' if 'HeartRate' in df.columns else None
+
+        hr_label_map = {
+            'happy': 'joy', 'sad': 'sadness', 'disgust': 'disgust',
+            'anger': 'anger', 'fear': 'fear', 'surprise': 'surprise',
+            'neutral': 'neutral',
+        }
+
+        # Check for text column (may not exist — dataset is HR + Emotion only)
         text_col = None
         for col in ['text', 'description', 'sentence']:
             if col in df.columns:
                 text_col = col
                 break
 
-        hr_label_map = {
-            'happy': 'joy', 'sad': 'sadness', 'disgust': 'disgust',
-            'anger': 'anger', 'fear': 'fear', 'surprise': 'surprise',
-        }
+        count = 0
+        bio_count = 0
 
         if text_col and label_col in df.columns:
-            count = 0
             for _, row in df.iterrows():
                 text = str(row[text_col]).strip()
                 raw_label = str(row[label_col]).strip().lower()
@@ -209,11 +216,138 @@ def load_emotion_datasets():
                 if text and len(text) > 10 and emotion and emotion in emotion_data:
                     emotion_data[emotion].append(text)
                     count += 1
-            print(f"  [+] Loaded heart rate emotion: {count} samples")
+
+        # Generate biometric-enriched training samples from real HR + emotion pairs
+        if hr_col and label_col in df.columns:
+            hr_templates = {
+                'joy': [
+                    "Heart rate at {hr} bpm — feeling happy and energized right now.",
+                    "My heart is beating at {hr} bpm. I feel genuinely joyful.",
+                    "Biometric reading: {hr} bpm heart rate. Experiencing happiness and warmth.",
+                ],
+                'sadness': [
+                    "Heart rate dropped to {hr} bpm. Feeling low and withdrawn.",
+                    "My heart rate is {hr} bpm. A heavy sadness sits in my chest.",
+                    "Biometric reading: {hr} bpm. The weight of sadness is slowing everything down.",
+                ],
+                'anger': [
+                    "Heart rate spiking at {hr} bpm. I can feel the anger rising.",
+                    "My heart is pounding at {hr} bpm. This fury is consuming me.",
+                    "Biometric reading: {hr} bpm. Anger has my whole body on edge.",
+                ],
+                'fear': [
+                    "Heart rate racing at {hr} bpm. The fear is gripping my chest.",
+                    "My heart is at {hr} bpm and climbing. I feel deeply afraid.",
+                    "Biometric reading: {hr} bpm. Fight-or-flight activated by this fear.",
+                ],
+                'disgust': [
+                    "Heart rate at {hr} bpm. This revulsion is visceral.",
+                    "My heart rate is {hr} bpm. Feeling deeply disgusted by what I saw.",
+                    "Biometric reading: {hr} bpm. A wave of disgust washed over me.",
+                ],
+                'surprise': [
+                    "Heart rate jumped to {hr} bpm. I did not see that coming at all.",
+                    "My heart is at {hr} bpm after that shock. Completely surprised.",
+                    "Biometric reading: {hr} bpm. The surprise caught me totally off guard.",
+                ],
+                'neutral': [
+                    "Heart rate steady at {hr} bpm. Feeling calm and balanced right now.",
+                    "My heart rate is {hr} bpm. Nothing particularly strong emotionally.",
+                    "Biometric reading: {hr} bpm. A neutral, relaxed state.",
+                ],
+            }
+
+            for _, row in df.iterrows():
+                raw_label = str(row[label_col]).strip().lower()
+                emotion = hr_label_map.get(raw_label)
+                if emotion and emotion in hr_templates:
+                    hr_val = int(round(float(row[hr_col])))
+                    template = random.choice(hr_templates[emotion])
+                    text = template.format(hr=hr_val)
+                    emotion_data[emotion].append(text)
+                    bio_count += 1
+
+            print(f"  [+] Loaded heart rate emotion: {count} text + {bio_count} biometric-enriched samples")
         else:
-            print(f"  [-] Heart rate dataset: no text column found (cols: {list(df.columns)})")
+            print(f"  [+] Loaded heart rate emotion: {count} text samples")
+            if not hr_col:
+                print(f"  [-] No HeartRate column found (cols: {list(df.columns)})")
     else:
         print(f"  [-] Heart rate emotion not found: {hr_path}")
+
+    # Dataset 5b: Stress Level datasets — real stress assessment data
+    stress_count = 0
+    for stress_file in ['Stress_Level_v1.csv', 'Stress_Level_v2.csv']:
+        stress_path = DOWNLOADS / stress_file
+        if stress_path.exists():
+            df = pd.read_csv(stress_path)
+            # Columns are cognitive/stress tasks with numeric stress scores (0-9 scale)
+            task_cols = [c for c in df.columns if c not in ['Unnamed: 0'] and c != df.columns[0]]
+
+            stress_templates = {
+                'stressed': [
+                    "Stress assessment score {score:.1f} during {task}. Feeling the pressure building.",
+                    "Scored {score:.1f} on {task} stress test. My body is tense and my mind is racing.",
+                    "Stress level at {score:.1f} for {task}. The cognitive load feels overwhelming.",
+                ],
+                'calm': [
+                    "Stress assessment score {score:.1f} during {task}. Feeling centered and relaxed.",
+                    "Scored {score:.1f} on {task}. Baseline calm — breathing is steady.",
+                    "Stress level at {score:.1f} for {task}. A peaceful, grounded state.",
+                ],
+                'anxiety': [
+                    "Stress assessment score {score:.1f} during {task}. Anxiety is creeping in.",
+                    "Scored {score:.1f} on {task}. The anticipation is making me anxious.",
+                    "Stress level at {score:.1f} for {task}. Worried about how I'm performing.",
+                ],
+                'overwhelmed': [
+                    "Stress assessment score {score:.1f} during {task}. Everything feels like too much.",
+                    "Scored {score:.1f} on {task}. I can't keep up — feeling completely overwhelmed.",
+                ],
+                'relief': [
+                    "Stress assessment score {score:.1f} during {task}. The tension is finally easing.",
+                    "Scored {score:.1f} on {task} rest period. Relief washing over me.",
+                ],
+            }
+
+            for _, row in df.iterrows():
+                for task in task_cols:
+                    try:
+                        score = float(row[task])
+                    except (ValueError, TypeError):
+                        continue
+
+                    # Map stress score to emotion based on thresholds
+                    if score >= 7.0:
+                        emotion = 'overwhelmed'
+                    elif score >= 5.0:
+                        emotion = 'stressed'
+                    elif score >= 3.0:
+                        emotion = 'anxiety'
+                    elif score >= 1.5:
+                        emotion = 'calm'
+                    else:
+                        emotion = 'relief'
+
+                    # Rest periods are more likely calm/relief
+                    if 'rest' in task.lower():
+                        if score < 4.0:
+                            emotion = 'relief'
+                        elif score < 6.0:
+                            emotion = 'calm'
+
+                    templates = stress_templates.get(emotion, [])
+                    if templates:
+                        template = random.choice(templates)
+                        task_name = task.replace('_', ' ').strip()
+                        text = template.format(score=score, task=task_name)
+                        emotion_data[emotion].append(text)
+                        stress_count += 1
+
+            print(f"  [+] Loaded {stress_file}: stress assessment data")
+
+    if stress_count > 0:
+        print(f"  [+] Total stress-derived samples: {stress_count}")
 
     # Dataset 6: EEG cognitive dataset — anxiety, calm, stressed
     eeg_path = DOWNLOADS / "eeg_cognitive_dataset.csv"
