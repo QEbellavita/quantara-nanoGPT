@@ -97,7 +97,7 @@ class ExternalContextProvider:
     def enrich_coaching(self, context: dict, text: str) -> dict
 ```
 
-`enrich_coaching()` takes the raw `context` object from the API request and returns:
+`enrich_coaching()` takes the raw `context` object from the API request and the user's original message (passed through for NLP Cloud sentiment cross-validation when `context["validate_sentiment"]` is truthy). Returns:
 
 ```python
 {
@@ -111,7 +111,22 @@ class ExternalContextProvider:
 
 ### Coaching Integration
 
-**Modified method signature:**
+The primary coaching path is `EmotionGPTModel.coach()` in `emotion_api_server.py`. The `QuantaraEmotionGPT.get_coaching_response()` in `quantara_integration.py` is also updated for parity.
+
+**Modified method signature (emotion_api_server.py — primary):**
+
+```python
+def coach(
+    self,
+    message: str,
+    emotion: str = None,
+    biometric_data: dict = None,
+    use_model: bool = False,
+    context: dict = None            # NEW — optional external context
+) -> dict
+```
+
+**Modified method signature (quantara_integration.py — secondary):**
 
 ```python
 def get_coaching_response(
@@ -123,13 +138,13 @@ def get_coaching_response(
 ) -> dict
 ```
 
-**Behavior when `context` is provided:**
+**Behavior when `context` is provided (JSON request body):**
 
-```python
-context = {
-    "location": [37.7749, -122.4194],      # lat, lon — triggers weather lookup
-    "food_log": ["3 cups of coffee"],        # triggers nutrition analysis
-    "validate_sentiment": true               # triggers NLP Cloud cross-validation
+```json
+{
+    "location": [37.7749, -122.4194],
+    "food_log": ["3 cups of coffee"],
+    "validate_sentiment": true
 }
 ```
 
@@ -232,9 +247,13 @@ All external API failures are non-fatal:
 
 ### Caching
 
-- **Weather:** 30-minute TTL, keyed on `f"{lat:.2f},{lon:.2f}"`. Simple dict cache with timestamp (no external dependency).
+- **Weather:** 30-minute TTL, keyed on `f"{lat:.2f},{lon:.2f}"`. Simple dict cache with timestamp (no external dependency). Max 100 entries with LRU eviction — oldest-accessed entries are pruned when the limit is reached.
 - **Nutrition:** No caching (food logs vary per request).
 - **Sentiment:** No caching (text varies per request).
+
+### Rate Limiting
+
+NLP Cloud and Nutritionix have rate limits on free/standard tiers. Each provider logs warnings when HTTP 429 responses are received and returns `None` (same as timeout behavior). No client-side throttling — rate limits are handled reactively via graceful degradation.
 
 ### Dependencies
 
@@ -268,8 +287,8 @@ Missing keys cause the respective provider to return `None` with a logged warnin
 | File | Action | Description |
 |------|--------|-------------|
 | `external_context.py` | Create | ExternalContextProvider with three sub-providers |
-| `emotion_api_server.py` | Modify | Add 3 standalone endpoints, wire context into coaching |
-| `quantara_integration.py` | Modify | Add `context` parameter to `get_coaching_response()` |
+| `emotion_api_server.py` | Modify | Add 3 standalone endpoints, wire context into `EmotionGPTModel.coach()` |
+| `quantara_integration.py` | Modify | Add `context` parameter to `get_coaching_response()` (parity) |
 | `tests/test_external_context.py` | Create | Unit tests for all providers and enrichment logic |
 
 ### Testing Strategy
