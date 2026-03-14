@@ -284,6 +284,8 @@ class QuantaraEmotionGPT:
                     result['cross_validation'] = enrichment['cross_validation']
             except ImportError:
                 pass
+            except Exception as e:
+                logger.warning(f"External context enrichment failed: {e}")
 
         return result
 
