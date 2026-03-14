@@ -440,3 +440,62 @@ class PersonalCalibrationBuffer:
 
         except Exception as e:
             logger.error(f"[PersonalCalibration] Fine-tune failed: {e}")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Task 5: CLI entry point
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+if __name__ == "__main__":
+    import argparse
+
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+
+    parser = argparse.ArgumentParser(
+        description="WiFi Signal Calibration — train and validate the calibration model"
+    )
+    parser.add_argument(
+        "--train", action="store_true",
+        help="Train a new calibration model on bootstrapped synthetic data"
+    )
+    parser.add_argument(
+        "--samples", type=int, default=5000,
+        help="Number of synthetic training pairs (default: 5000)"
+    )
+    parser.add_argument(
+        "--epochs", type=int, default=100,
+        help="Training epochs (default: 100)"
+    )
+    parser.add_argument(
+        "--output", type=str, default="checkpoints/ruview_calibration.pt",
+        help="Checkpoint output path (default: checkpoints/ruview_calibration.pt)"
+    )
+
+    args = parser.parse_args()
+
+    if args.train:
+        print(f"Training calibration model: {args.samples} samples, {args.epochs} epochs")
+        model = train_calibration_model(
+            n_pairs=args.samples,
+            epochs=args.epochs,
+            checkpoint_path=args.output,
+        )
+        print(f"Checkpoint saved to {args.output}")
+
+        # Quick validation on sample inputs
+        model.eval()
+        test_inputs = [
+            (8.0, 0.1, "slow breathing, low motion"),
+            (16.0, 0.5, "normal breathing, moderate motion"),
+            (26.0, 0.9, "fast breathing, high motion"),
+        ]
+        print("\nValidation:")
+        for br, motion, label in test_inputs:
+            x = torch.tensor([[br, motion]], dtype=torch.float32)
+            with torch.no_grad():
+                out = model(x)
+            hrv, eda = out[0, 0].item(), out[0, 1].item()
+            print(f"  {label}: BR={br}, Motion={motion} -> HRV={hrv:.1f} ms, EDA={eda:.1f} uS")
+    else:
+        parser.print_help()
