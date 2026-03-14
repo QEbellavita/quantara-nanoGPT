@@ -419,7 +419,7 @@ class MultimodalEmotionAnalyzer:
         )
 
         if classifier_checkpoint and Path(classifier_checkpoint).exists():
-            state = torch.load(classifier_checkpoint, map_location=self.device)
+            state = torch.load(classifier_checkpoint, map_location=self.device, weights_only=False)
             # Check if dimensions match
             saved_text_dim = state['fusion_head']['shared.0.weight'].shape[1] - 16
             saved_num_emotions = state['fusion_head']['emotion_classifier.weight'].shape[0]

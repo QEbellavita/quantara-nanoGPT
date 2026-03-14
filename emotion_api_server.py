@@ -1199,10 +1199,14 @@ def main():
 def get_app():
     """Create app for WSGI deployment (gunicorn)"""
     import os
-    from download_model import download_model
 
-    # Download model if not present (for Railway deployment)
-    checkpoint = download_model()
+    try:
+        from download_model import download_model
+        checkpoint = download_model()
+    except Exception as e:
+        print(f"[EmotionGPT] Model download failed: {e}")
+        checkpoint = None
+
     if checkpoint is None:
         checkpoint = os.environ.get('CHECKPOINT_PATH', 'out-quantara-emotion-fast/ckpt.pt')
 
@@ -1212,7 +1216,14 @@ def get_app():
     print(f"[EmotionGPT] Checkpoint: {checkpoint}")
     print(f"[EmotionGPT] Device: {device}")
 
-    model = EmotionGPTModel(checkpoint_path=checkpoint, device=device)
+    try:
+        model = EmotionGPTModel(checkpoint_path=checkpoint, device=device)
+        print(f"[EmotionGPT] Model loaded successfully")
+    except Exception as e:
+        print(f"[EmotionGPT] WARNING: Model loading failed: {e}")
+        print(f"[EmotionGPT] Starting in multimodal-only mode (sentence-transformers)")
+        model = None
+
     return create_app(model)
 
 # Create app at module level for gunicorn
