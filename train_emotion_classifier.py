@@ -33,8 +33,10 @@ from torch.utils.data import Dataset, DataLoader
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from emotion_classifier import (
-    BiometricEncoder, FusionHead, EMOTION_FAMILIES, FAMILY_NAMES, family_for_emotion
+    BiometricEncoder, FusionHead, EMOTION_FAMILIES, FAMILY_NAMES, family_for_emotion,
+    _EMOTION_TO_FAMILY,
 )
+from pose_encoder import PoseEncoder, POSE_FEATURE_NAMES
 
 # Optional imports
 try:
@@ -110,6 +112,64 @@ def generate_synthetic_biometrics(emotion: str) -> dict:
     }
 
 
+# ─── Synthetic pose ranges for root emotions (research-grounded) ────────────
+
+POSE_RANGES = {
+    'joy': {'slouch': (0.7, 1.0), 'openness': (0.6, 1.0), 'tension': (0.0, 0.2),
+            'head_tilt': (-0.1, 0.2), 'gesture_speed': (0.2, 0.6), 'symmetry': (0.7, 1.0),
+            'forward_lean': (-0.1, 0.2), 'stillness': (0.0, 0.1)},
+    'sadness': {'slouch': (0.2, 0.5), 'openness': (0.1, 0.4), 'tension': (0.2, 0.5),
+                'head_tilt': (-0.5, -0.1), 'gesture_speed': (0.0, 0.1), 'symmetry': (0.5, 0.8),
+                'forward_lean': (-0.3, 0.0), 'stillness': (0.3, 0.8)},
+    'fear': {'slouch': (0.5, 0.8), 'openness': (0.1, 0.3), 'tension': (0.6, 1.0),
+             'head_tilt': (-0.3, 0.1), 'gesture_speed': (0.0, 0.3), 'symmetry': (0.3, 0.7),
+             'forward_lean': (0.1, 0.4), 'stillness': (0.1, 0.5)},
+    'anger': {'slouch': (0.6, 0.9), 'openness': (0.3, 0.6), 'tension': (0.5, 0.9),
+              'head_tilt': (0.0, 0.4), 'gesture_speed': (0.3, 0.8), 'symmetry': (0.3, 0.6),
+              'forward_lean': (0.2, 0.5), 'stillness': (0.0, 0.1)},
+    'calm': {'slouch': (0.7, 1.0), 'openness': (0.4, 0.7), 'tension': (0.0, 0.2),
+             'head_tilt': (-0.1, 0.1), 'gesture_speed': (0.0, 0.1), 'symmetry': (0.8, 1.0),
+             'forward_lean': (-0.1, 0.1), 'stillness': (0.4, 0.9)},
+    'neutral': {'slouch': (0.5, 0.8), 'openness': (0.3, 0.6), 'tension': (0.1, 0.4),
+                'head_tilt': (-0.2, 0.2), 'gesture_speed': (0.0, 0.2), 'symmetry': (0.6, 0.9),
+                'forward_lean': (-0.1, 0.1), 'stillness': (0.1, 0.4)},
+}
+
+# Map family names to root emotions for pose range lookup
+_FAMILY_TO_ROOT_EMOTION = {
+    'Joy': 'joy', 'Sadness': 'sadness', 'Anger': 'anger', 'Fear': 'fear',
+    'Calm': 'calm', 'Neutral': 'neutral', 'Love': 'calm',
+    'Self-Conscious': 'fear', 'Surprise': 'neutral',
+}
+
+
+def generate_synthetic_pose(emotion: str) -> dict:
+    """Generate plausible pose features for an emotion.
+
+    For sub-emotions not in POSE_RANGES, uses the family root emotion ranges
+    via _EMOTION_TO_FAMILY lookup.
+
+    Returns dict with 8 named pose features matching POSE_FEATURE_NAMES order.
+    """
+    if emotion in POSE_RANGES:
+        ranges = POSE_RANGES[emotion]
+    else:
+        family = _EMOTION_TO_FAMILY.get(emotion, 'Neutral')
+        root = _FAMILY_TO_ROOT_EMOTION.get(family, 'neutral')
+        ranges = POSE_RANGES[root]
+
+    return {
+        'slouch_score': random.uniform(*ranges['slouch']),
+        'openness_score': random.uniform(*ranges['openness']),
+        'tension_score': random.uniform(*ranges['tension']),
+        'head_tilt': random.uniform(*ranges['head_tilt']),
+        'gesture_speed': random.uniform(*ranges['gesture_speed']),
+        'symmetry_score': random.uniform(*ranges['symmetry']),
+        'forward_lean': random.uniform(*ranges['forward_lean']),
+        'stillness_duration': random.uniform(*ranges['stillness']),
+    }
+
+
 # ─── Real Biometric Data Loader ─────────────────────────────────────────────
 
 class RealBiometricSampler:
@@ -123,12 +183,16 @@ class RealBiometricSampler:
     def __init__(self, downloads_dir: Path):
         self.real_hr_by_emotion = defaultdict(list)
         self.real_stress_scores = defaultdict(list)
+        self.real_multisignal = defaultdict(list)
         self._load_heart_rate_data(downloads_dir)
         self._load_stress_data(downloads_dir)
+        self._load_smartwatch_data(downloads_dir)
+        self._load_empatica_data(downloads_dir)
 
         total = sum(len(v) for v in self.real_hr_by_emotion.values())
         stress_total = sum(len(v) for v in self.real_stress_scores.values())
-        print(f"  Real biometric sampler: {total} HR readings, {stress_total} stress scores")
+        multi_total = sum(len(v) for v in self.real_multisignal.values())
+        print(f"  Real biometric sampler: {total} HR readings, {stress_total} stress scores, {multi_total} multi-signal readings")
 
     def _load_heart_rate_data(self, downloads_dir: Path):
         """Load real heart rate values grouped by emotion."""
@@ -213,12 +277,121 @@ class RealBiometricSampler:
                         self.real_stress_scores['calm'].append(score)
                         self.real_stress_scores['mindfulness'].append(score)
 
+    def _load_smartwatch_data(self, downloads_dir: Path):
+        """Load real (HR, HRV, Stress) triples from Smartwatch Health Monitoring dataset."""
+        sw_path = Path('/Users/bel/Quantara-Frontend/ml-training/datasets/raw/Smartwatch_Health_Monitoring_Dataset_40000_Rows.csv')
+        if not sw_path.exists():
+            print(f"  [-] Smartwatch dataset not found at {sw_path}")
+            return
+
+        df = pd.read_csv(sw_path)
+        required = ['Avg_Heart_Rate', 'HRV', 'Stress_Level']
+        if not all(c in df.columns for c in required):
+            print(f"  [-] Smartwatch dataset missing columns: {list(df.columns)}")
+            return
+
+        count = 0
+        for _, row in df.iterrows():
+            try:
+                hr = float(row['Avg_Heart_Rate'])
+                hrv = float(row['HRV'])
+                stress = float(row['Stress_Level'])
+            except (ValueError, TypeError):
+                continue
+
+            if not (40 <= hr <= 180 and 0 <= hrv <= 200 and 1 <= stress <= 10):
+                continue
+
+            # Map stress levels to emotions (same as prepare.py)
+            emotions = []
+            if stress >= 8:
+                emotions = ['overwhelmed', 'stressed']
+            elif stress >= 6:
+                emotions = ['stressed', 'anxiety']
+            elif stress >= 4:
+                emotions = ['anxiety', 'worry']
+            elif stress >= 2.5:
+                emotions = ['calm']
+            else:
+                emotions = ['mindfulness', 'relief']
+
+            for emo in emotions:
+                self.real_multisignal[emo].append((hr, hrv, stress))
+                count += 1
+
+        print(f"  Smartwatch multi-signal: {count} readings loaded")
+
+    def _load_empatica_data(self, downloads_dir: Path):
+        """Load real (HR, HRV_RMSSD, EDA) triples from Empatica stress dataset."""
+        emp_path = Path('/Users/bel/Quantara-Frontend/ml-training/datasets/processed/empatica_stress_processed.csv')
+        if not emp_path.exists():
+            print(f"  [-] Empatica dataset not found at {emp_path}")
+            return
+
+        df = pd.read_csv(emp_path)
+        required = ['hr_mean', 'hrv_rmssd', 'eda_mean', 'stress_level', 'arousal_level']
+        if not all(c in df.columns for c in required):
+            print(f"  [-] Empatica dataset missing columns: {list(df.columns)}")
+            return
+
+        count = 0
+        for _, row in df.iterrows():
+            try:
+                hr = float(row['hr_mean'])
+                hrv = float(row['hrv_rmssd'])
+                eda = float(row['eda_mean'])
+                stress = str(row['stress_level']).strip().lower()
+                arousal = str(row['arousal_level']).strip().lower()
+            except (ValueError, TypeError):
+                continue
+
+            # Map (stress_level, arousal_level) to emotions
+            emotions = []
+            if stress == 'high' and arousal == 'high':
+                emotions = ['overwhelmed', 'fear']
+            elif stress == 'moderate' and arousal == 'high':
+                emotions = ['anxiety', 'stressed']
+            elif stress == 'low' and arousal == 'high':
+                emotions = ['excitement', 'enthusiasm']
+            elif stress == 'low' and arousal == 'medium':
+                emotions = ['calm', 'relief']
+            elif stress == 'low' and arousal == 'low':
+                emotions = ['mindfulness', 'boredom']
+
+            for emo in emotions:
+                self.real_multisignal[emo].append((hr, hrv, eda))
+                count += 1
+
+        print(f"  Empatica multi-signal: {count} readings loaded")
+
     def sample(self, emotion: str) -> dict:
         """Get biometric readings — real when available, synthetic as fallback.
 
-        Uses real HR data + derives HRV/EDA from stress scores when available,
-        otherwise falls back to the synthetic BIOMETRIC_RANGES.
+        Priority: multi-signal (smartwatch/empatica) > single-signal (HR/stress) > synthetic.
         """
+        # Multi-signal: prefer real (HR, HRV, EDA/stress) triples when available
+        multi_pool = self.real_multisignal.get(emotion)
+        if multi_pool:
+            hr, hrv, eda_or_stress = random.choice(multi_pool)
+            heart_rate = hr + random.gauss(0, 1.0)  # ±2 bpm jitter
+            heart_rate = max(40, min(180, heart_rate))
+            hrv_val = hrv + random.gauss(0, 1.5)  # ±3 ms jitter
+            hrv_val = max(5, min(200, hrv_val))
+            # If the third value looks like a stress score (1-10), derive EDA from it
+            if eda_or_stress <= 10:
+                ranges = BIOMETRIC_RANGES.get(emotion, BIOMETRIC_RANGES['neutral'])
+                eda = random.uniform(*ranges['eda']) + (eda_or_stress / 10.0) * 2.0
+            else:
+                # Real EDA value from Empatica
+                eda = eda_or_stress + random.gauss(0, 0.2)
+            eda = max(0.3, min(25, eda))
+            return {
+                'heart_rate': heart_rate,
+                'hrv': hrv_val,
+                'eda': eda,
+            }
+
+        # Fall through to single-signal logic
         hr_pool = self.real_hr_by_emotion.get(emotion)
         stress_pool = self.real_stress_scores.get(emotion)
         ranges = BIOMETRIC_RANGES.get(emotion, BIOMETRIC_RANGES['neutral'])
@@ -263,11 +436,12 @@ class RealBiometricSampler:
 
 
 class EmotionDataset(Dataset):
-    """Dataset of text embeddings + biometrics + labels (emotion + family)."""
+    """Dataset of text embeddings + biometrics + pose + labels (emotion + family)."""
 
-    def __init__(self, embeddings, biometrics, emotion_labels, family_labels):
+    def __init__(self, embeddings, biometrics, pose_features, emotion_labels, family_labels):
         self.embeddings = torch.tensor(embeddings, dtype=torch.float32)
         self.biometrics = torch.tensor(biometrics, dtype=torch.float32)
+        self.pose_features = torch.tensor(pose_features, dtype=torch.float32)
         self.emotion_labels = torch.tensor(emotion_labels, dtype=torch.long)
         self.family_labels = torch.tensor(family_labels, dtype=torch.long)
 
@@ -278,6 +452,7 @@ class EmotionDataset(Dataset):
         return (
             self.embeddings[idx],
             self.biometrics[idx],
+            self.pose_features[idx],
             self.emotion_labels[idx],
             self.family_labels[idx],
         )
@@ -547,26 +722,43 @@ def train(args):
 
     # Initialize models first
     bio_encoder = BiometricEncoder(output_dim=16).to(device)
+    pose_encoder = PoseEncoder().to(device)
 
     # Load real biometric data (falls back to synthetic when unavailable)
     print("\n  Loading real biometric data...")
     bio_sampler = RealBiometricSampler(Path(args.data_dir))
 
-    print("\n  Generating biometric features (real + synthetic hybrid)...")
+    print("\n  Generating biometric + pose features (real + synthetic hybrid)...")
 
     train_bio_features = []
+    train_pose_features = []
     for emotion in train_emotions:
         bio = bio_sampler.sample(emotion)
         features = bio_encoder._extract_features(bio).numpy()
         train_bio_features.append(features)
+
+        pose = generate_synthetic_pose(emotion)
+        # 20% pose dropout — zero all pose features
+        if random.random() < 0.2:
+            pose_feat = [0.0] * 8
+        else:
+            pose_feat = [pose[name] for name in POSE_FEATURE_NAMES]
+        train_pose_features.append(pose_feat)
     train_bio_features = np.array(train_bio_features)
+    train_pose_features = np.array(train_pose_features)
 
     val_bio_features = []
+    val_pose_features = []
     for emotion in val_emotions:
         bio = bio_sampler.sample(emotion)
         features = bio_encoder._extract_features(bio).numpy()
         val_bio_features.append(features)
+
+        pose = generate_synthetic_pose(emotion)
+        pose_feat = [pose[name] for name in POSE_FEATURE_NAMES]
+        val_pose_features.append(pose_feat)
     val_bio_features = np.array(val_bio_features)
+    val_pose_features = np.array(val_pose_features)
 
     # Emotion labels (32-way)
     train_emotion_labels = [EMOTION_TO_IDX[e] for e in train_emotions]
@@ -578,10 +770,12 @@ def train(args):
 
     # Create datasets
     train_dataset = EmotionDataset(
-        train_embeddings, train_bio_features, train_emotion_labels, train_family_labels
+        train_embeddings, train_bio_features, train_pose_features,
+        train_emotion_labels, train_family_labels
     )
     val_dataset = EmotionDataset(
-        val_embeddings, val_bio_features, val_emotion_labels, val_family_labels
+        val_embeddings, val_bio_features, val_pose_features,
+        val_emotion_labels, val_family_labels
     )
 
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
@@ -598,7 +792,8 @@ def train(args):
     ).to(device)
 
     # Optimizer
-    params = list(bio_encoder.parameters()) + list(fusion_head.parameters())
+    params = (list(bio_encoder.parameters()) + list(pose_encoder.parameters())
+              + list(fusion_head.parameters()))
     optimizer = torch.optim.AdamW(params, lr=args.lr, weight_decay=0.01)
 
     emotion_criterion = nn.NLLLoss()
@@ -616,22 +811,25 @@ def train(args):
     for epoch in range(args.epochs):
         # Train
         bio_encoder.train()
+        pose_encoder.train()
         fusion_head.train()
         train_loss = 0.0
         train_emotion_correct = 0
         train_family_correct = 0
         train_total = 0
 
-        for text_emb, bio_feat, emotion_labels, family_labels in train_loader:
+        for text_emb, bio_feat, pose_feat, emotion_labels, family_labels in train_loader:
             text_emb = text_emb.to(device)
             bio_feat = bio_feat.to(device)
+            pose_feat = pose_feat.to(device)
             emotion_labels = emotion_labels.to(device)
             family_labels = family_labels.to(device)
 
             optimizer.zero_grad()
 
             bio_emb = bio_encoder(bio_feat)
-            emotion_probs, family_probs = fusion_head(text_emb, bio_emb)
+            pose_emb = pose_encoder(pose_feat)
+            emotion_probs, family_probs = fusion_head(text_emb, bio_emb, pose_emb)
 
             # Two-stage loss
             emotion_loss = emotion_criterion(torch.log(emotion_probs + 1e-8), emotion_labels)
@@ -653,20 +851,23 @@ def train(args):
 
         # Validate
         bio_encoder.eval()
+        pose_encoder.eval()
         fusion_head.eval()
         val_emotion_correct = 0
         val_family_correct = 0
         val_total = 0
 
         with torch.no_grad():
-            for text_emb, bio_feat, emotion_labels, family_labels in val_loader:
+            for text_emb, bio_feat, pose_feat, emotion_labels, family_labels in val_loader:
                 text_emb = text_emb.to(device)
                 bio_feat = bio_feat.to(device)
+                pose_feat = pose_feat.to(device)
                 emotion_labels = emotion_labels.to(device)
                 family_labels = family_labels.to(device)
 
                 bio_emb = bio_encoder(bio_feat)
-                emotion_probs, family_probs = fusion_head(text_emb, bio_emb)
+                pose_emb = pose_encoder(pose_feat)
+                emotion_probs, family_probs = fusion_head(text_emb, bio_emb, pose_emb)
 
                 emotion_preds = emotion_probs.argmax(dim=1)
                 family_preds = family_probs.argmax(dim=1)
@@ -693,9 +894,14 @@ def train(args):
             checkpoint_data = {
                 'fusion_head': fusion_head.state_dict(),
                 'biometric_encoder': bio_encoder.state_dict(),
-                'n_embd': n_embd,
-                'num_emotions': 32,
-                'num_families': 9,
+                'pose_encoder': pose_encoder.state_dict(),
+                'meta': {
+                    'text_dim': n_embd,
+                    'biometric_dim': 16,
+                    'pose_dim': 16,
+                    'num_emotions': 32,
+                    'num_families': 9,
+                },
                 'val_emotion_acc': val_emotion_acc,
                 'val_family_acc': val_family_acc,
                 'embedding_type': 'sentence-transformer' if use_sentence_transformer else 'nanogpt',
