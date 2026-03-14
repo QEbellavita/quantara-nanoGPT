@@ -121,6 +121,19 @@ class RuViewProvider:
         # Mood signals derived from RuView data
         self._mood_signals = []
 
+        # WiFi calibration model (replaces linear approximations when available)
+        self._calibration_model = None
+        self._calibration_buffer = None
+        try:
+            from wifi_calibration import load_calibration_model
+            model, buffer = load_calibration_model()
+            if model:
+                self._calibration_model = model
+                self._calibration_buffer = buffer
+                logger.info("[RuViewProvider] Calibration model loaded")
+        except ImportError:
+            logger.info("[RuViewProvider] wifi_calibration not available, using linear fallback")
+
     # ─── Connection Management ─────────────────────────────────────────
 
     def connect(self) -> bool:
@@ -334,11 +347,19 @@ class RuViewProvider:
             logger.debug("[RuViewProvider] Low confidence reading, skipping")
             return None
 
-        # Map breathing rate → HRV estimate
-        hrv = self._breathing_to_hrv(br)
-
-        # Map motion level → EDA estimate
-        eda = self._motion_to_eda(motion)
+        # Map breathing rate → HRV estimate and motion level → EDA estimate
+        if self._calibration_model is not None:
+            import torch
+            x = torch.tensor([[br, motion]], dtype=torch.float32)
+            if self._calibration_buffer:
+                out = self._calibration_buffer.calibrate(x)
+            else:
+                with torch.no_grad():
+                    out = self._calibration_model(x)
+            hrv, eda = out.squeeze().tolist()
+        else:
+            hrv = self._breathing_to_hrv(br)
+            eda = self._motion_to_eda(motion)
 
         return {
             'heart_rate': hr,

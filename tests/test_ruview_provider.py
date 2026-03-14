@@ -237,3 +237,89 @@ class TestInsight:
 
     def test_insight_returns_none_without_data(self, provider):
         assert provider.get_insight() is None
+
+
+class TestCalibrationIntegration:
+    """Test calibration model integration with RuViewProvider."""
+
+    def test_uses_calibration_when_available(self, provider):
+        """When calibration model is set, hrv/eda come from it, not linear."""
+        mock_model = MagicMock()
+        # Model returns tensor-like output
+        import torch
+        mock_model.return_value = torch.tensor([[65.0, 4.5]])
+        provider._calibration_model = mock_model
+        provider._calibration_buffer = None
+
+        # Set up vitals data
+        provider._vitals_buffer.append({
+            'heart_rate': 80.0,
+            'breathing_rate': 16.0,
+            'confidence': 0.9,
+            'timestamp': time.time(),
+        })
+        provider._presence_data = {
+            'detected': True, 'occupancy': 1, 'motion_level': 0.3,
+        }
+
+        bio = provider.get_biometrics()
+        assert bio is not None
+        assert bio['hrv'] == 65.0
+        assert bio['eda'] == 4.5
+        mock_model.assert_called_once()
+
+    def test_uses_calibration_buffer_when_available(self, provider):
+        """When both model and buffer are set, buffer.calibrate() is used."""
+        import torch
+        mock_model = MagicMock()
+        mock_buffer = MagicMock()
+        mock_buffer.calibrate.return_value = torch.tensor([[70.0, 3.2]])
+        provider._calibration_model = mock_model
+        provider._calibration_buffer = mock_buffer
+
+        provider._vitals_buffer.append({
+            'heart_rate': 80.0,
+            'breathing_rate': 16.0,
+            'confidence': 0.9,
+            'timestamp': time.time(),
+        })
+        provider._presence_data = {
+            'detected': True, 'occupancy': 1, 'motion_level': 0.3,
+        }
+
+        bio = provider.get_biometrics()
+        assert bio is not None
+        assert abs(bio['hrv'] - 70.0) < 0.01
+        assert abs(bio['eda'] - 3.2) < 0.01
+        mock_buffer.calibrate.assert_called_once()
+        mock_model.assert_not_called()
+
+    def test_falls_back_to_linear_when_no_calibration(self, provider):
+        """When calibration_model is None, linear fallback is used."""
+        provider._calibration_model = None
+        provider._calibration_buffer = None
+
+        provider._vitals_buffer.append({
+            'heart_rate': 80.0,
+            'breathing_rate': 16.0,
+            'confidence': 0.9,
+            'timestamp': time.time(),
+        })
+        provider._presence_data = {
+            'detected': True, 'occupancy': 1, 'motion_level': 0.3,
+        }
+
+        bio = provider.get_biometrics()
+        assert bio is not None
+        # Verify these match the linear methods
+        expected_hrv = provider._breathing_to_hrv(16.0)
+        expected_eda = provider._motion_to_eda(0.3)
+        assert bio['hrv'] == expected_hrv
+        assert bio['eda'] == expected_eda
+
+    def test_load_calibration_returns_none_when_no_checkpoint(self):
+        """load_calibration_model returns (None, None) for nonexistent path."""
+        from wifi_calibration import load_calibration_model
+        model, buf = load_calibration_model('/nonexistent/path.pt')
+        assert model is None
+        assert buf is None
