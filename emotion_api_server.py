@@ -66,6 +66,12 @@ try:
 except ImportError:
     HAS_MULTIMODAL = False
 
+try:
+    from external_context import ExternalContextProvider
+    HAS_EXTERNAL_CONTEXT = True
+except ImportError:
+    HAS_EXTERNAL_CONTEXT = False
+
 
 # ─── 32-Emotion Taxonomy ────────────────────────────────────────────────────
 
@@ -765,6 +771,9 @@ def create_app(model: EmotionGPTModel) -> Flask:
     app = Flask(__name__)
     CORS(app)  # Enable CORS for frontend integration
 
+    # External context provider (weather, nutrition, sentiment)
+    context_provider = ExternalContextProvider() if HAS_EXTERNAL_CONTEXT else None
+
     @app.route('/api/emotion/status', methods=['GET'])
     def status():
         """Health check endpoint"""
@@ -952,6 +961,63 @@ def create_app(model: EmotionGPTModel) -> Flask:
                 'status': 'success'
             })
 
+        except Exception as e:
+            return jsonify({'error': str(e), 'status': 'error'}), 500
+
+    # ─── External Context Endpoints ─────────────────────────────────────────
+
+    @app.route('/api/context/weather', methods=['POST'])
+    def context_weather():
+        """Get weather and air quality for a location"""
+        if not context_provider:
+            return jsonify({'error': 'External context not available', 'status': 'error'}), 503
+        try:
+            data = request.json or {}
+            lat = data.get('latitude')
+            lon = data.get('longitude')
+            if lat is None or lon is None:
+                return jsonify({'error': 'latitude and longitude are required', 'status': 'error'}), 400
+
+            result = context_provider.get_weather(float(lat), float(lon))
+            if result is None:
+                return jsonify({'error': 'Weather service unavailable', 'status': 'error'}), 502
+            return jsonify({**result, 'status': 'success'})
+        except Exception as e:
+            return jsonify({'error': str(e), 'status': 'error'}), 500
+
+    @app.route('/api/context/nutrition', methods=['POST'])
+    def context_nutrition():
+        """Analyze food log for mood-relevant nutrition data"""
+        if not context_provider:
+            return jsonify({'error': 'External context not available', 'status': 'error'}), 503
+        try:
+            data = request.json or {}
+            food_log = data.get('food_log')
+            if not food_log or not isinstance(food_log, list):
+                return jsonify({'error': 'food_log (list of strings) is required', 'status': 'error'}), 400
+
+            result = context_provider.get_nutrition(food_log)
+            if result is None:
+                return jsonify({'error': 'Nutrition service unavailable', 'status': 'error'}), 502
+            return jsonify({**result, 'status': 'success'})
+        except Exception as e:
+            return jsonify({'error': str(e), 'status': 'error'}), 500
+
+    @app.route('/api/context/sentiment', methods=['POST'])
+    def context_sentiment():
+        """Cross-validate text sentiment via NLP Cloud"""
+        if not context_provider:
+            return jsonify({'error': 'External context not available', 'status': 'error'}), 503
+        try:
+            data = request.json or {}
+            text = data.get('text')
+            if not text:
+                return jsonify({'error': 'text is required', 'status': 'error'}), 400
+
+            result = context_provider.validate_sentiment(text)
+            if result is None:
+                return jsonify({'error': 'Sentiment service unavailable', 'status': 'error'}), 502
+            return jsonify({**result, 'status': 'success'})
         except Exception as e:
             return jsonify({'error': str(e), 'status': 'error'}), 500
 
