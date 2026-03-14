@@ -6,6 +6,7 @@ import requests
 from unittest.mock import patch, MagicMock
 from external_context import WeatherProvider
 from external_context import NutritionProvider
+from external_context import SentimentValidator
 
 
 class TestWeatherProvider:
@@ -270,3 +271,68 @@ class TestNutritionProvider:
             calories=600, protein_g=25, sugar_g=20, caffeine_mg=100
         )
         assert signals == []
+
+
+class TestSentimentValidator:
+    def setup_method(self):
+        self.validator = SentimentValidator()
+
+    @patch.dict(os.environ, {'NLPCLOUD_API_KEY': 'test_key'})
+    @patch('external_context.requests.post')
+    def test_validate_sentiment_success(self, mock_post):
+        """Successful sentiment validation returns scores."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            'scored_labels': [
+                {'label': 'POSITIVE', 'score': 0.12},
+                {'label': 'NEGATIVE', 'score': 0.88},
+            ]
+        }
+        mock_post.return_value = mock_resp
+
+        validator = SentimentValidator()
+        result = validator.validate_sentiment("I feel awful")
+
+        assert result is not None
+        assert result['nlpcloud_sentiment'] == 'NEGATIVE'
+        assert result['negative_score'] == 0.88
+        assert result['positive_score'] == 0.12
+
+    def test_validate_sentiment_no_key(self):
+        """Missing API key returns None."""
+        with patch.dict(os.environ, {}, clear=True):
+            validator = SentimentValidator()
+            result = validator.validate_sentiment("test")
+            assert result is None
+
+    @patch.dict(os.environ, {'NLPCLOUD_API_KEY': 'test_key'})
+    @patch('external_context.requests.post')
+    def test_validate_sentiment_timeout(self, mock_post):
+        """Timeout returns None."""
+        mock_post.side_effect = requests.exceptions.Timeout()
+        validator = SentimentValidator()
+        result = validator.validate_sentiment("test")
+        assert result is None
+
+    def test_agrees_with_local_positive(self):
+        """POSITIVE sentiment agrees with Joy family."""
+        agrees = self.validator._check_agreement('POSITIVE', 'Joy')
+        assert agrees is True
+
+    def test_agrees_with_local_negative(self):
+        """NEGATIVE sentiment agrees with Sadness family."""
+        agrees = self.validator._check_agreement('NEGATIVE', 'Sadness')
+        assert agrees is True
+
+    def test_disagrees_positive_vs_sadness(self):
+        """POSITIVE sentiment disagrees with Sadness family."""
+        agrees = self.validator._check_agreement('POSITIVE', 'Sadness')
+        assert agrees is False
+
+    def test_neutral_always_agrees(self):
+        """Neutral family always agrees."""
+        agrees = self.validator._check_agreement('POSITIVE', 'Neutral')
+        assert agrees is True
+        agrees = self.validator._check_agreement('NEGATIVE', 'Neutral')
+        assert agrees is True

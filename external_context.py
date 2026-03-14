@@ -248,3 +248,73 @@ class NutritionProvider:
         except Exception as e:
             logger.warning(f"[NutritionProvider] API call failed: {e}")
             return None
+
+
+class SentimentValidator:
+    """
+    Cross-validates emotion classification using NLP Cloud sentiment analysis.
+    Informational only — does not override the local 32-emotion classifier.
+    Auth: NLPCLOUD_API_KEY env var.
+
+    Connected to:
+    - AI Conversational Coach (cross-validation field)
+    - Dashboard Data Integration
+    """
+
+    API_URL = 'https://api.nlpcloud.io/v1/distilbert-base-uncased-finetuned-sst-2-english/sentiment'
+
+    POSITIVE_FAMILIES = {'Joy', 'Love', 'Calm', 'Surprise'}
+    NEGATIVE_FAMILIES = {'Sadness', 'Anger', 'Fear', 'Self-Conscious'}
+
+    def _check_agreement(self, nlp_sentiment: str, local_family: str) -> bool:
+        """Check if NLP Cloud sentiment direction agrees with local family valence."""
+        if local_family == 'Neutral':
+            return True
+        if nlp_sentiment == 'POSITIVE':
+            return local_family in self.POSITIVE_FAMILIES
+        if nlp_sentiment == 'NEGATIVE':
+            return local_family in self.NEGATIVE_FAMILIES
+        return True
+
+    def validate_sentiment(self, text: str, local_family: str = None) -> dict | None:
+        """
+        Get sentiment scores from NLP Cloud.
+        Returns None if key is missing or API fails.
+        """
+        api_key = os.environ.get('NLPCLOUD_API_KEY')
+
+        if not api_key:
+            logger.warning("[SentimentValidator] Missing NLPCLOUD_API_KEY")
+            return None
+
+        try:
+            resp = requests.post(self.API_URL, json={
+                'text': text,
+            }, headers={
+                'Authorization': f'Token {api_key}',
+                'Content-Type': 'application/json',
+            }, timeout=API_TIMEOUT)
+            resp.raise_for_status()
+            data = resp.json()
+
+            scored_labels = data.get('scored_labels', [])
+            scores = {item['label']: item['score'] for item in scored_labels}
+
+            positive_score = scores.get('POSITIVE', 0.0)
+            negative_score = scores.get('NEGATIVE', 0.0)
+            sentiment = 'POSITIVE' if positive_score >= negative_score else 'NEGATIVE'
+
+            result = {
+                'nlpcloud_sentiment': sentiment,
+                'positive_score': positive_score,
+                'negative_score': negative_score,
+            }
+
+            if local_family:
+                result['agrees_with_local'] = self._check_agreement(sentiment, local_family)
+
+            return result
+
+        except Exception as e:
+            logger.warning(f"[SentimentValidator] API call failed: {e}")
+            return None
