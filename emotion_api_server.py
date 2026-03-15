@@ -89,6 +89,12 @@ try:
 except ImportError:
     HAS_WEBSOCKET = False
 
+try:
+    from auto_retrain import AutoRetrainManager
+    HAS_AUTO_RETRAIN = True
+except ImportError:
+    HAS_AUTO_RETRAIN = False
+
 
 # ─── 32-Emotion Taxonomy ────────────────────────────────────────────────────
 
@@ -821,6 +827,23 @@ def create_app(model: EmotionGPTModel) -> Flask:
     # Multimodal analyzer (available even when main model is None)
     multimodal_analyzer = model.multimodal_analyzer if model and hasattr(model, 'multimodal_analyzer') else None
 
+    # Auto-retrain manager (monitors calibration model drift and triggers retraining)
+    auto_retrain_manager = None
+    if HAS_AUTO_RETRAIN and context_provider and hasattr(context_provider, 'ruview') and context_provider.ruview:
+        ruview = context_provider.ruview
+        if hasattr(ruview, '_calibration_buffer') and ruview._calibration_buffer:
+            try:
+                auto_retrain_manager = AutoRetrainManager(
+                    calibration_buffer=ruview._calibration_buffer,
+                    model=ruview._calibration_model or ruview._calibration_buffer._model,
+                    checkpoint_path='checkpoints/ruview_calibration.pt',
+                    socketio=socketio,
+                )
+                auto_retrain_manager.start(check_interval=60)
+                logger.info("[EmotionAPI] Auto-retrain manager started")
+            except Exception as e:
+                logger.error(f"[EmotionAPI] Auto-retrain init failed: {e}")
+
     def require_model():
         """Check if model is loaded, return error response if not"""
         if model is None:
@@ -1333,6 +1356,41 @@ def create_app(model: EmotionGPTModel) -> Flask:
         except Exception as e:
             return jsonify({'error': str(e), 'status': 'error'}), 500
 
+    # ─── Auto-Retrain Endpoints ─────────────────────────────────────────────
+
+    @app.route('/api/calibration/retrain-status', methods=['GET'])
+    def retrain_status():
+        """Get current auto-retrain pipeline status"""
+        if not auto_retrain_manager:
+            return jsonify({
+                'status': 'unavailable',
+                'message': 'Auto-retrain manager not initialized',
+            }), 503
+        return jsonify(auto_retrain_manager.get_status())
+
+    @app.route('/api/calibration/retrain', methods=['POST'])
+    def trigger_retrain():
+        """Manually trigger a calibration model retrain"""
+        if not auto_retrain_manager:
+            return jsonify({
+                'status': 'error',
+                'message': 'Auto-retrain manager not initialized',
+            }), 503
+        result = auto_retrain_manager.manual_retrain()
+        return jsonify(result)
+
+    @app.route('/api/calibration/retrain-log', methods=['GET'])
+    def retrain_log():
+        """Get retrain event history"""
+        if not auto_retrain_manager:
+            return jsonify({
+                'status': 'unavailable',
+                'message': 'Auto-retrain manager not initialized',
+            }), 503
+        limit = request.args.get('limit', 50, type=int)
+        entries = auto_retrain_manager.retrain_log.get_log(limit=limit)
+        return jsonify({'log': entries, 'count': len(entries)})
+
     return app
 
 
@@ -1379,6 +1437,9 @@ def main():
     print(f"  - GET  /api/ruview/biometrics")
     print(f"  - GET  /api/ruview/presence")
     print(f"  - POST /api/ruview/analyze")
+    print(f"  - GET  /api/calibration/retrain-status")
+    print(f"  - POST /api/calibration/retrain")
+    print(f"  - GET  /api/calibration/retrain-log")
     print(f"\n  Starting server on http://{args.host}:{args.port}")
     print("=" * 60 + "\n")
 
