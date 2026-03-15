@@ -437,13 +437,19 @@ class ProfileDB:
         finally:
             conn.close()
 
-    def get_last_snapshot_time(self, user_id: str) -> Optional[float]:
+    def get_last_snapshot_time(self, user_id: str, snapshot_type: Optional[str] = None) -> Optional[float]:
         conn = self._read_conn()
         try:
-            row = conn.execute(
-                "SELECT MAX(timestamp) FROM snapshots WHERE user_id = ?",
-                (user_id,),
-            ).fetchone()
+            if snapshot_type is not None:
+                row = conn.execute(
+                    "SELECT MAX(timestamp) FROM snapshots WHERE user_id = ? AND snapshot_type = ?",
+                    (user_id, snapshot_type),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT MAX(timestamp) FROM snapshots WHERE user_id = ?",
+                    (user_id,),
+                ).fetchone()
             return row[0]
         finally:
             conn.close()
