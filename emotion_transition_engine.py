@@ -65,12 +65,12 @@ CURATED_EDGES = [
     ('pride', 'gratitude', 1.0, 'Humble Reflection', 'Who supported your success? Acknowledge them', 5, 'cognitive'),
 
     # === Sadness family transitions ===
-    ('sadness', 'acceptance', 2.0, 'Behavioral Activation', 'Do one small meaningful activity — walk, call a friend', 15, 'activation'),
+    ('sadness', 'relief', 2.0, 'Behavioral Activation', 'Do one small meaningful activity — walk, call a friend', 15, 'activation'),
     ('sadness', 'hope', 2.5, 'Future Visioning', 'Imagine one thing you look forward to, even if small', 10, 'cognitive'),
     ('sadness', 'calm', 2.0, 'Self-Compassion', 'Place hand on heart, say: this is hard and I am here for myself', 8, 'calming'),
     ('grief', 'sadness', 1.0, 'Meaning-Making', 'What did this relationship or experience teach you?', 15, 'cognitive'),
     ('grief', 'calm', 3.0, 'Grounding', '5-4-3-2-1 sensory grounding: name things you see, hear, feel', 10, 'calming'),
-    ('boredom', 'curiosity', 1.5, 'Micro-Goals', 'Set a 10-minute challenge — learn, create, or explore something new', 10, 'activation'),
+    ('boredom', 'enthusiasm', 1.5, 'Micro-Goals', 'Set a 10-minute challenge — learn, create, or explore something new', 10, 'activation'),
     ('boredom', 'enthusiasm', 2.0, 'Values Reconnection', 'What genuinely interests you? Take one step toward it', 10, 'cognitive'),
     ('nostalgia', 'gratitude', 1.0, 'Bridge Past-Present', 'What from that memory do you still carry? Honor it', 7, 'cognitive'),
 
@@ -81,7 +81,7 @@ CURATED_EDGES = [
     ('frustration', 'calm', 2.5, 'Autonomic Reset', '6 exhales longer than inhales, shake out tension', 8, 'calming'),
     ('hate', 'anger', 1.0, 'Intensity Reduction', 'Name the hurt underneath — what was violated?', 10, 'cognitive'),
     ('hate', 'calm', 4.0, 'Perspective-Taking', 'Write a letter (unsent) expressing what you need', 15, 'cognitive'),
-    ('contempt', 'curiosity', 2.5, 'Perspective Shift', 'What if they have a reason I haven\'t considered?', 10, 'cognitive'),
+    ('contempt', 'compassion', 2.5, 'Perspective Shift', 'What if they have a reason I haven\'t considered?', 10, 'cognitive'),
     ('contempt', 'calm', 3.0, 'Grounding', 'Return to breath — 4 counts in, 7 counts out', 8, 'calming'),
     ('disgust', 'calm', 2.5, 'Graduated Exposure', 'Notice the sensation without judgment, let it pass', 10, 'calming'),
     ('disgust', 'neutral', 2.0, 'Detachment', 'Step back mentally — observe without reacting', 7, 'cognitive'),
@@ -125,19 +125,14 @@ CURATED_EDGES = [
     ('shame', 'compassion', 2.5, 'Self-Worth Rebuilding', 'List 5 qualities you genuinely like about yourself', 10, 'cognitive'),
 
     # === Surprise & Neutral transitions ===
-    ('surprise', 'curiosity', 1.0, 'Mindful Observation', 'What just happened? Observe with openness', 5, 'cognitive'),
+    ('surprise', 'enthusiasm', 1.0, 'Mindful Observation', 'What just happened? Observe with openness', 5, 'cognitive'),
     ('surprise', 'joy', 1.5, 'Positive Reframe', 'Could this be a delightful surprise? Find the gift', 5, 'cognitive'),
-    ('neutral', 'curiosity', 1.5, 'Values Clarification', 'What matters to you right now? Explore one thread', 7, 'cognitive'),
+    ('neutral', 'enthusiasm', 1.5, 'Values Clarification', 'What matters to you right now? Explore one thread', 7, 'cognitive'),
     ('neutral', 'calm', 1.0, 'Mindful Settling', 'Neutral is fine — deepen it into peaceful awareness', 5, 'calming'),
     ('neutral', 'joy', 2.0, 'Engagement Spark', 'What brought you joy recently? Revisit it briefly', 5, 'cognitive'),
 
     # === Cross-family bridge edges (ensure full connectivity) ===
-    ('curiosity', 'enthusiasm', 1.0, 'Exploration', 'Follow this curiosity — where does it lead?', 7, 'activation'),
-    ('curiosity', 'joy', 1.5, 'Discovery', 'Learning something new can spark delight', 7, 'cognitive'),
-    ('curiosity', 'calm', 2.0, 'Reflective Inquiry', 'Sit with the question — let answers come naturally', 10, 'cognitive'),
-    ('acceptance', 'calm', 1.0, 'Settling Into', 'Accept what is, breathe, let the body soften', 8, 'calming'),
-    ('acceptance', 'hope', 1.5, 'Forward Looking', 'From acceptance, what new door opens?', 7, 'cognitive'),
-    ('acceptance', 'gratitude', 1.5, 'Finding Meaning', 'What did this experience teach you?', 7, 'cognitive'),
+    ('relief', 'hope', 1.5, 'Forward Looking', 'From relief, what new door opens?', 7, 'cognitive'),
 
     # === Intra-family & reverse edges (ensure all 32 are reachable) ===
     ('joy', 'excitement', 1.0, 'Energy Amplification', 'Let joy build into excitement — what thrills you?', 5, 'activation'),
@@ -165,8 +160,12 @@ CURATED_EDGES = [
     ('nostalgia', 'sadness', 1.0, 'Bittersweet', 'The sweet ache of nostalgia deepening — sit with it', 7, 'cognitive'),
 ]
 
-# Virtual nodes used in edges but not in the canonical 32
-_VIRTUAL_NODES = {'curiosity', 'acceptance'}
+# Emotion family roots — used to build bridge edges through neutral
+_FAMILY_ROOTS = [
+    'joy', 'sadness', 'anger', 'fear', 'love', 'calm',
+    'guilt', 'surprise', 'boredom', 'hope', 'relief',
+    'resilience', 'mindfulness', 'pride', 'compassion',
+]
 
 # The canonical 32 emotions
 CANONICAL_EMOTIONS = [
@@ -187,26 +186,24 @@ CANONICAL_EMOTIONS = [
 class TransitionGraph:
     """Directed weighted graph over emotions with Dijkstra pathfinding."""
 
-    def __init__(self, edges=None):
+    def __init__(self, edges=None, adaptive_weights: Optional[Dict[Tuple[str, str], Dict[str, float]]] = None):
         self.nodes = set(CANONICAL_EMOTIONS)
         # adjacency: node -> [(neighbor, weight, metadata)]
         self._adj: Dict[str, List[Tuple[str, float, dict]]] = {e: [] for e in self.nodes}
 
-        # Add virtual nodes from edges
-        for vn in _VIRTUAL_NODES:
-            if vn not in self.nodes:
-                self.nodes.add(vn)
-                self._adj[vn] = []
-
         self._edge_count = 0
         for edge in (edges or CURATED_EDGES):
             src, dst, weight, technique, exercise, duration, step_type = edge
-            if src not in self._adj:
-                self.nodes.add(src)
-                self._adj[src] = []
-            if dst not in self._adj:
-                self.nodes.add(dst)
-                self._adj[dst] = []
+            # Skip edges involving non-canonical emotions
+            if src not in self.nodes or dst not in self.nodes:
+                continue
+            # Apply adaptive weight adjustment if available
+            if adaptive_weights:
+                adj = adaptive_weights.get((src, dst), {})
+                success_rate = adj.get(technique)
+                if success_rate is not None:
+                    # Lower weight for higher success rate (weight is cost)
+                    weight = weight * (1.5 - success_rate)
             self._adj[src].append((dst, weight, {
                 'technique': technique,
                 'exercise': exercise,
@@ -215,13 +212,52 @@ class TransitionGraph:
             }))
             self._edge_count += 1
 
+        # Ensure strong connectivity via neutral as universal hub
+        self._add_neutral_bridges()
+
+    def _add_neutral_bridges(self):
+        """Add bridge edges through neutral to ensure strong connectivity.
+
+        For every canonical emotion, ensure there is an edge to neutral and
+        from neutral to that emotion (using high weights so Dijkstra prefers
+        natural paths when available).
+        """
+        # Collect existing edges from/to neutral to avoid duplicates
+        existing_to_neutral = set()
+        existing_from_neutral = set()
+        for neighbor, _, _ in self._adj.get('neutral', []):
+            existing_from_neutral.add(neighbor)
+        for emotion in self.nodes:
+            for neighbor, _, _ in self._adj.get(emotion, []):
+                if neighbor == 'neutral':
+                    existing_to_neutral.add(emotion)
+
+        bridge_meta = {
+            'technique': 'Neutral Bridge',
+            'exercise': 'Pause, breathe, and return to a neutral baseline',
+            'duration_min': 5,
+            'step_type': 'calming',
+        }
+
+        for emotion in CANONICAL_EMOTIONS:
+            if emotion == 'neutral':
+                continue
+            # emotion -> neutral
+            if emotion not in existing_to_neutral:
+                self._adj[emotion].append(('neutral', 3.5, bridge_meta.copy()))
+                self._edge_count += 1
+            # neutral -> emotion
+            if emotion not in existing_from_neutral:
+                self._adj['neutral'].append((emotion, 3.5, bridge_meta.copy()))
+                self._edge_count += 1
+
     @property
     def edge_count(self) -> int:
         return self._edge_count
 
-    def find_path(self, from_emotion: str, to_emotion: str) -> List[dict]:
+    def find_path(self, from_emotion: str, to_emotion: str) -> Optional[List[dict]]:
         """Find shortest path between two emotions using Dijkstra.
-        Returns list of step dicts, or empty list if same emotion.
+        Returns list of step dicts, empty list if same emotion, or None if unreachable.
         Raises ValueError for unknown emotions.
         """
         if from_emotion not in self.nodes:
@@ -256,7 +292,7 @@ class TransitionGraph:
                     counter += 1
 
         if dist[to_emotion] == float('inf'):
-            return []  # No path exists
+            return None  # No path exists
 
         # Reconstruct path
         path = []
@@ -423,9 +459,22 @@ class EmotionTransitionEngine:
     """
 
     def __init__(self, db_path: str = 'transition_outcomes.db'):
-        self.graph = TransitionGraph()
         self.tracker = AdaptiveWeightTracker(db_path=db_path)
+        self.graph = self._build_graph()
         self._sessions: Dict[str, TransitionSession] = {}
+
+    def _build_graph(self) -> TransitionGraph:
+        """Build the transition graph with adaptive weights applied."""
+        # Collect adaptive weights for all edges
+        adaptive_weights: Dict[Tuple[str, str], Dict[str, float]] = {}
+        for edge in CURATED_EDGES:
+            src, dst = edge[0], edge[1]
+            key = (src, dst)
+            if key not in adaptive_weights:
+                weights = self.tracker.get_adjusted_weights(src, dst)
+                if weights:
+                    adaptive_weights[key] = weights
+        return TransitionGraph(adaptive_weights=adaptive_weights)
 
     def start_session(self, user_id: str, from_emotion: str, to_emotion: str) -> TransitionSession:
         """Start a new transition session with graph-based pathfinding."""
@@ -442,10 +491,11 @@ class EmotionTransitionEngine:
         """Remove a session."""
         self._sessions.pop(session_id, None)
 
-    def find_path(self, from_emotion: str, to_emotion: str) -> List[dict]:
+    def find_path(self, from_emotion: str, to_emotion: str) -> Optional[List[dict]]:
         """Find optimal path without creating a session."""
         return self.graph.find_path(from_emotion, to_emotion)
 
     def log_feedback(self, from_emotion: str, to_emotion: str, technique: str, success: bool):
-        """Log transition outcome feedback."""
+        """Log transition outcome feedback and rebuild graph with updated weights."""
         self.tracker.log_outcome(from_emotion, to_emotion, technique, success=success)
+        self.graph = self._build_graph()

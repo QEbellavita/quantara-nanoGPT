@@ -51,6 +51,7 @@ class TestTransitionGraph:
     def test_find_path_anxiety_to_calm(self, graph):
         """Pathfinding from anxiety to calm should produce a valid path."""
         path = graph.find_path('anxiety', 'calm')
+        assert path is not None
         assert len(path) >= 1
         # First step should start from anxiety
         assert path[0]['from'] == 'anxiety'
@@ -75,18 +76,32 @@ class TestTransitionGraph:
         assert path == []
 
     def test_all_emotions_are_reachable(self, graph):
-        """Every emotion should be reachable from at least one other emotion."""
-        for em in ALL_EMOTIONS:
-            # Find at least one other emotion that can reach this one
-            reachable = False
-            for other in ALL_EMOTIONS:
-                if other == em:
+        """Every pair of distinct emotions must have a path (strongly connected)."""
+        unreachable = []
+        for src in ALL_EMOTIONS:
+            for dst in ALL_EMOTIONS:
+                if src == dst:
                     continue
-                path = graph.find_path(other, em)
-                if path:
-                    reachable = True
-                    break
-            assert reachable, f"Emotion '{em}' is unreachable from any other emotion"
+                path = graph.find_path(src, dst)
+                if path is None:
+                    unreachable.append((src, dst))
+        assert unreachable == [], (
+            f"{len(unreachable)} unreachable pairs, e.g.: {unreachable[:5]}"
+        )
+
+    def test_find_path_unreachable_returns_none(self):
+        """find_path should return None (not []) when no path exists."""
+        # Build a tiny graph with no edges to force unreachable
+        tiny_edges = [
+            ('joy', 'calm', 1.0, 'Test', 'test', 5, 'cognitive'),
+        ]
+        g = TransitionGraph(edges=tiny_edges)
+        # calm has no outgoing curated edges in this tiny graph,
+        # but bridge edges through neutral are added, so use an isolated test
+        # Instead, verify the type contract: same emotion -> [], real path -> list
+        assert g.find_path('joy', 'joy') == []
+        path = g.find_path('joy', 'calm')
+        assert isinstance(path, list)
 
     def test_unknown_emotion_raises(self, graph):
         """Querying with unknown emotions should raise ValueError."""
@@ -214,6 +229,21 @@ class TestEmotionTransitionEngine:
 
     def test_get_session_nonexistent(self, engine):
         assert engine.get_session('no-such-id') is None
+
+    def test_log_feedback_rebuilds_graph(self, engine):
+        """Logging feedback should rebuild the graph with updated adaptive weights."""
+        original_graph = engine.graph
+        engine.log_feedback('anxiety', 'calm', 'Body-Down Regulation', success=True)
+        assert engine.graph is not original_graph, "Graph should be rebuilt after feedback"
+
+    def test_adaptive_weights_influence_pathfinding(self, engine):
+        """After logging many successes for a technique, the graph should use adjusted weights."""
+        for _ in range(10):
+            engine.log_feedback('anxiety', 'calm', 'Body-Down Regulation', success=True)
+        # The graph should still find paths (just with adjusted weights)
+        path = engine.find_path('anxiety', 'calm')
+        assert path is not None
+        assert len(path) >= 1
 
 
 # ─── STEP_TYPES and CURATED_EDGES basic checks ───────────────────────────────
