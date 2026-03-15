@@ -303,7 +303,7 @@ class PersonalCalibrationBuffer:
     - predict() is never blocked during fine-tuning
     """
 
-    MAX_BUFFER_SIZE = 100
+    MAX_BUFFER_SIZE = 500
     FIRST_FINETUNE_THRESHOLD = 20
     SUBSEQUENT_FINETUNE_INTERVAL = 50
 
@@ -350,6 +350,40 @@ class PersonalCalibrationBuffer:
     def pair_count(self) -> int:
         """Number of pairs currently in the buffer."""
         return len(self._buffer)
+
+    @property
+    def total_samples_seen(self) -> int:
+        """Total number of samples ever added to this buffer."""
+        return self._total_added
+
+    @property
+    def buffer_size(self) -> int:
+        """Current number of samples in the rolling buffer."""
+        return len(self._buffer)
+
+    def get_buffer_data(self) -> list:
+        """Return a copy of the current buffer contents."""
+        return list(self._buffer)
+
+    def get_prediction_errors(self, model) -> list:
+        """
+        Compute per-sample MAE between model predictions and targets
+        for all samples in the buffer.
+
+        Connected to:
+        - Neural Workflow AI Engine (drift detection input)
+        - ML Training & Prediction Systems (model quality assessment)
+        """
+        if len(self._buffer) == 0:
+            return []
+        errors = []
+        model.eval()
+        with torch.no_grad():
+            for wifi_tensor, target_tensor in self._buffer:
+                pred = model(wifi_tensor.unsqueeze(0)).squeeze(0)
+                error = float(torch.mean(torch.abs(pred - target_tensor)))
+                errors.append(error)
+        return errors
 
     def add_pair(self, wifi_input: tuple, wearable_target: tuple):
         """

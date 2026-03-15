@@ -275,10 +275,12 @@ class TestPersonalCalibrationBuffer:
         assert profile is None
 
     def test_buffer_max_size(self, buffer):
-        """Buffer should not exceed 100 pairs."""
-        for i in range(120):
+        """Buffer should not exceed MAX_BUFFER_SIZE (500) pairs."""
+        from wifi_calibration import PersonalCalibrationBuffer
+        max_size = PersonalCalibrationBuffer.MAX_BUFFER_SIZE
+        for i in range(max_size + 20):
             buffer.add_pair(
                 wifi_input=(15.0, 0.5),
                 wearable_target=(55.0, 3.0),
             )
-        assert buffer.pair_count <= 100
+        assert buffer.pair_count <= max_size
