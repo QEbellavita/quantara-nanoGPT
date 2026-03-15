@@ -27,7 +27,19 @@ Centralized engine (Approach A) with event-sourced ingestion (elements of Approa
 | source | TEXT NOT NULL | Origin service (nanogpt, backend, frontend, master, external) |
 | confidence | REAL | 0.0–1.0 confidence in this data point |
 
-Indexes: `(user_id, domain, timestamp)`, `(user_id, timestamp)`
+Indexes: `(user_id, domain, timestamp)`, `(user_id, timestamp)`, `(user_id, event_type)`
+
+#### Event Rate Limiting & Retention
+
+High-frequency biometric events (HR, HRV, EDA) are downsampled before logging:
+- **Raw biometric readings:** Aggregated into 1-minute windows (min, max, mean) before logging as a single event. At most 1 event per domain per minute per user.
+- **All other events:** Logged individually (emotion classifications, session events, etc. are naturally low-frequency).
+- **Retention tiers:**
+  - Raw events < 30 days: kept as-is
+  - Events 30–90 days: aggregated into hourly summaries, raw events purged
+  - Events 90–180 days: aggregated into daily summaries, hourly summaries purged
+  - Events > 180 days: aggregated into weekly summaries, daily summaries purged
+- **Storage ceiling:** If event table exceeds 500K rows per user, early aggregation is triggered regardless of age.
 
 ### User Profile (SQLite)
 
@@ -36,6 +48,7 @@ Indexes: `(user_id, domain, timestamp)`, `(user_id, timestamp)`
 | user_id | TEXT PRIMARY KEY | User identifier |
 | created_at | REAL | Unix timestamp |
 | fingerprint_json | TEXT | Full 8-domain fingerprint as JSON |
+| schema_version | INTEGER | Fingerprint JSON schema version (starts at 1) |
 | confidence | REAL | Overall fingerprint confidence 0.0–1.0 |
 | evolution_stage | INTEGER | Current stage 1–5 |
 | evolution_count | INTEGER | Total evolution cycles completed |
@@ -119,7 +132,7 @@ Indexes: `(user_id, domain, timestamp)`, `(user_id, timestamp)`
 | nanoGPT Emotion API | In-process (direct call) | Emotional, Linguistic, Temporal |
 | nanoGPT Transition Engine | In-process (direct call) | Behavioral, Cognitive |
 | nanoGPT WiFi/RuView | In-process (direct call) | Biometric |
-| nanoGPT Pattern Detection | In-process (direct call) | Emotional, Evolution |
+| nanoGPT Pattern Detection | In-process (direct call) | Emotional (pattern events also trigger evolution stage evaluation) |
 | nanoGPT External Context | In-process (direct call) | Temporal |
 | Quantara Backend Engines | Pull (REST, 5min interval) | Biometric, Cognitive, Emotional |
 | Quantara Frontend | Push (webhook to /api/profile/ingest) | Temporal, Social, Aspirational |
@@ -139,8 +152,12 @@ Indexes: `(user_id, domain, timestamp)`, `(user_id, timestamp)`
 ### Ingestion Patterns
 
 - **Push (in-process):** Local nanoGPT modules call `profile_engine.log_event()` directly. Synchronous, zero latency.
-- **Pull (polling):** `ProfileSyncWorker` thread polls Backend and Master REST APIs every 5 minutes for new data. Exponential backoff on failure (5min → 10min → 20min).
-- **Webhook (push from external):** `/api/profile/ingest` endpoint accepts event payloads from Frontend and any ecosystem service.
+- **Pull (polling):** `ProfileSyncWorker` thread polls Backend and Master REST APIs every 5 minutes for new data. Exponential backoff on failure (5min → 10min → 20min → max 60min). Resets to 5min after any successful poll.
+- **Webhook (push from external):** `/api/profile/ingest` endpoint accepts event payloads from authenticated ecosystem services (see Authentication section).
+
+### Concurrency Strategy
+
+SQLite is configured with WAL (Write-Ahead Logging) mode for concurrent read/write access. All database writes (event logging, profile updates, snapshot creation) are serialized through a single `ProfileDBWriter` thread with a queue. The `ProfileSyncWorker` and Flask request threads enqueue writes; only the writer thread executes them. Domain processors and API reads use separate read-only connections.
 
 ## 4. API Surface
 
@@ -150,22 +167,22 @@ Indexes: `(user_id, domain, timestamp)`, `(user_id, timestamp)`
 |----------|--------|---------|----------|
 | `/api/v1/users/:id/genetic-fingerprint/sync` | POST | `{ user_id }` | Full fingerprint: 8 domains, confidence, evolution stage, synergies, evolution count |
 | `/api/v1/users/:id/insights` | POST | `{ user_id, domains? }` | AI-generated insights array with confidence and actionable recommendations |
-| `/api/v1/cognitive/theory-of-mind` | POST | `{ user_id }` | Personality evolution: Big Five trends, behavioral predictions |
+| `/api/v1/cognitive/theory-of-mind` | POST | `{ user_id }` | Personality evolution: Big Five traits inferred from Emotional + Social + Behavioral DNA (Openness from novelty-seeking + emotional range; Conscientiousness from habit strength + routine consistency; Extraversion from social interaction frequency + group affinity; Agreeableness from feedback receptivity + communication style; Neuroticism from stress response curve + emotional volatility) |
 
 ### Profile Endpoints
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/profile/ingest` | POST | Webhook — accepts event payloads from ecosystem services |
+| `/api/profile/ingest` | POST | Webhook — accepts event payloads from authenticated ecosystem services (requires service API key) |
 | `/api/profile/:id/snapshot` | GET | Current fingerprint snapshot |
 | `/api/profile/:id/evolution` | GET | Full evolution timeline: all snapshots, stage history, trends |
 | `/api/profile/:id/evolution/stage` | GET | Current stage + progress toward next stage (criteria checklist) |
 | `/api/profile/:id/domain/:domain` | GET | Deep-dive into a single DNA domain (full metrics + event history) |
 | `/api/profile/:id/synergies` | GET | Cross-domain correlations and insights |
-| `/api/profile/:id/predictions` | GET | Next-state forecasts based on current fingerprint |
+| `/api/profile/:id/predictions` | GET | Next-state forecasts: predicted dominant emotion family, expected stress level, optimal intervention timing, and risk factors — computed from Temporal + Emotional + Biometric DNA trend extrapolation over a 24-48 hour window |
 | `/api/profile/:id/events` | GET | Paginated event log (query params: domain, start_time, end_time, limit, offset) |
 | `/api/profile/:id/export` | GET | Full profile export as JSON (data portability) |
-| `/api/profile/:id` | DELETE | Purge all user data (events, snapshots, profile) |
+| `/api/profile/:id` | DELETE | Purge all user data (events, snapshots, profile, synergies) |
 | `/api/profile/health` | GET | Profile engine health check |
 
 ### Ecosystem Service Endpoints
@@ -201,11 +218,31 @@ Indexes: `(user_id, domain, timestamp)`, `(user_id, timestamp)`
 - **Regress:** If sustained negative patterns detected for 2+ weeks, user drops back one stage with a supportive "recalibration" message (never punitive framing).
 - **Evaluation frequency:** Every 24 hours or after 20+ new events, whichever comes first.
 
+### Confidence Computation
+
+Overall fingerprint confidence is a weighted mean of per-domain confidences:
+
+- **Per-domain confidence** = `min(1.0, event_count / 100) * data_recency_factor * source_diversity_factor`
+  - `data_recency_factor`: 1.0 if events within last 7 days, decays by 0.1 per week of inactivity (floor 0.3)
+  - `source_diversity_factor`: 1.0 if 2+ sources feed the domain, 0.8 if single source
+- **Overall confidence** = weighted mean of all 8 domain confidences, weighted by event count per domain. Domains with zero events contribute 0.0.
+- Confidence naturally rises as more diverse, recent data flows in and naturally decays during inactivity.
+
+### Synergy Detection
+
+A synergy is a statistically significant correlation between two DNA domains over a rolling 4-week window:
+
+- **Computation:** For each pair of domains, compute Pearson correlation between their daily aggregate scores over the past 28 days. Requires at least 14 days of data for both domains.
+- **Detection threshold:** |correlation| > 0.6 with p-value < 0.05.
+- **Insight generation:** Positive correlations produce insights like "Your sleep quality improvements correlate with better emotional regulation." Negative correlations: "Higher work stress periods coincide with reduced social engagement."
+- **Re-evaluation:** Synergies are recomputed weekly. A synergy is removed if it drops below |0.4| for 2 consecutive weeks.
+
 ### Snapshot Schedule
 
 - **Weekly snapshots:** Taken every Sunday at midnight (user's local time if known, else UTC). Contains full fingerprint + per-domain trends.
 - **Monthly snapshots:** First of each month. Contains fingerprint + aggregated trends + stage history.
 - **Stage-change snapshots:** Taken immediately on any stage transition.
+- **Catch-up on startup:** When the server starts, it checks for any missed scheduled snapshots (by comparing last snapshot timestamp against expected schedule) and generates them retroactively from available event data.
 
 ## 6. Module Structure
 
@@ -300,13 +337,19 @@ If the profile engine isn't initialized (e.g., standalone training), the calls a
 - **Ecosystem sync failures are graceful:** If Backend/Master is unreachable, pull worker backs off exponentially (5min → 10min → 20min). Profile continues updating from local sources.
 - **Evolution stage transitions require confirmation:** Stage advances only trigger after criteria are met for 3 consecutive evaluation cycles.
 
+### Authentication & Authorization
+
+- **User-facing endpoints** (`/api/profile/:id/*`, `/api/v1/users/:id/*`): Require a user token (JWT or API key) in the `Authorization` header. The token's `user_id` claim must match the `:id` path parameter — users can only access their own profile. Returns 403 if mismatched.
+- **Ingest webhook** (`/api/profile/ingest`): Requires a service API key in the `X-Service-Key` header. Each ecosystem service (Backend, Frontend, Master) gets a unique key configured in environment variables (`PROFILE_SERVICE_KEY_BACKEND`, `PROFILE_SERVICE_KEY_FRONTEND`, `PROFILE_SERVICE_KEY_MASTER`). Returns 401 if missing/invalid.
+- **Ecosystem service endpoints** (`/api/profile/:id/context`, `/api/profile/:id/domain/:domain/score`): Require service API key (same as ingest). These are service-to-service calls, not user-facing.
+- **Rate limiting:** Export and event log endpoints limited to 10 requests/minute per user. Ingest webhook limited to 100 events/second per service key.
+
 ### Privacy
 
-- **Per-user isolation:** All SQLite queries scoped by `user_id`. No cross-user data access possible through the API.
-- **Event log retention:** Raw events older than 6 months are aggregated into domain summaries and purged. Snapshots (weekly/monthly) kept indefinitely.
-- **Authentication:** Profile endpoints inherit existing JWT auth from `emotion_api_server.py`.
+- **Per-user isolation:** All SQLite queries scoped by `user_id`. API authorization enforces ownership — users can only access their own profile.
+- **Event log retention:** Tiered aggregation (see Section 1 — Event Rate Limiting & Retention).
 - **Data export:** `/api/profile/:id/export` returns full profile as JSON for data portability.
-- **Data deletion:** `DELETE /api/profile/:id` purges all events, snapshots, and profile data for a user.
+- **Data deletion:** `DELETE /api/profile/:id` purges all events, snapshots, profile, and synergies data for a user.
 
 ## 9. Connection to Neural Workflow AI Engine
 
