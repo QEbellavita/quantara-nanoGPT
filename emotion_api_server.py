@@ -29,6 +29,10 @@ Endpoints:
   GET  /api/ruview/biometrics        - Get WiFi-sensed biometrics
   GET  /api/ruview/presence          - Get presence/occupancy data
   POST /api/ruview/analyze           - Emotion analysis with WiFi biometrics
+  POST /api/emotion/transition/record              - Record emotion for tracking
+  GET  /api/emotion/transition/trajectory/<user_id> - Get emotion timeline
+  GET  /api/emotion/transition/patterns/<user_id>   - Detect concerning patterns
+  GET  /api/emotion/transition/dashboard/<user_id>  - Therapist dashboard summary
 
 Start server:
   python emotion_api_server.py --port 5050
@@ -94,6 +98,12 @@ try:
     HAS_AUTO_RETRAIN = True
 except ImportError:
     HAS_AUTO_RETRAIN = False
+
+try:
+    from emotion_transition_tracker import EmotionTransitionTracker
+    HAS_TRANSITION_TRACKER = True
+except ImportError:
+    HAS_TRANSITION_TRACKER = False
 
 
 # ─── 32-Emotion Taxonomy ────────────────────────────────────────────────────
@@ -860,6 +870,36 @@ def create_app(model: EmotionGPTModel) -> Flask:
             except Exception as e:
                 logger.error(f"[EmotionAPI] Auto-retrain init failed: {e}")
 
+    # Emotion Transition Tracker (per-user emotion history + pattern detection)
+    # ── Backend Integration Note ──────────────────────────────────────────────
+    # The Quantara Backend (Node.js) can call the transition tracker endpoints
+    # to build per-user emotion timelines and detect concerning patterns:
+    #
+    #   POST /api/emotion/transition/record
+    #       Body: { user_id, emotion, family?, confidence?, timestamp? }
+    #       Records a single emotion reading for a user.
+    #
+    #   GET  /api/emotion/transition/trajectory/<user_id>?window=24
+    #       Returns the emotion timeline for the given window (hours).
+    #
+    #   GET  /api/emotion/transition/patterns/<user_id>
+    #       Detects concerning patterns (rapid shifts, prolonged negative states).
+    #
+    #   GET  /api/emotion/transition/dashboard/<user_id>
+    #       Full therapist dashboard summary (trajectory + patterns + stats).
+    #
+    # The unified_text_emotion_engine.js and emotion_aware_training_engine.js
+    # in Quantara-Backend/ml-pipeline/ already connect to this server on port
+    # 5050 (configurable via DISTILBERT_PORT / pythonApiUrl). After calling
+    # /api/emotion/analyze, the backend can POST to /api/emotion/transition/record
+    # with the same user_id to maintain a longitudinal emotion log. Alternatively,
+    # when the analyze request includes a user_id field, this server will
+    # automatically record the result in the transition tracker (see below).
+    # ──────────────────────────────────────────────────────────────────────────
+    transition_tracker = EmotionTransitionTracker() if HAS_TRANSITION_TRACKER else None
+    if transition_tracker:
+        logger.info("[EmotionAPI] Emotion Transition Tracker initialized")
+
     def require_model():
         """Check if model is loaded, return error response if not"""
         if model is None:
@@ -962,6 +1002,20 @@ def create_app(model: EmotionGPTModel) -> Flask:
                 try:
                     ws_emit_emotion(result)
                 except Exception:
+                    pass
+
+            # Auto-record to transition tracker when user_id is provided
+            user_id = data.get('user_id')
+            if user_id and transition_tracker:
+                try:
+                    transition_tracker.record(
+                        user_id=user_id,
+                        emotion=result.get('dominant_emotion', result.get('emotion', 'neutral')),
+                        family=result.get('family'),
+                        confidence=float(result.get('confidence', 1.0)),
+                    )
+                except Exception:
+                    # Non-blocking: tracker errors must not affect the analysis response
                     pass
 
             return jsonify({**result, 'status': 'success'})
@@ -1407,6 +1461,70 @@ def create_app(model: EmotionGPTModel) -> Flask:
         entries = auto_retrain_manager.retrain_log.get_log(limit=limit)
         return jsonify({'log': entries, 'count': len(entries)})
 
+    # ── Emotion Transition Tracker endpoints (Therapist Dashboard) ─────
+
+    @app.route('/api/emotion/transition/record', methods=['POST'])
+    def transition_record():
+        """Record an emotion reading for per-user transition tracking"""
+        if not transition_tracker:
+            return jsonify({'error': 'Transition tracker unavailable'}), 503
+        try:
+            data = request.json or {}
+            user_id = data.get('user_id')
+            emotion = data.get('emotion')
+            if not user_id or not emotion:
+                return jsonify({
+                    'error': 'Missing required fields: user_id, emotion',
+                }), 400
+            result = transition_tracker.record(
+                user_id=user_id,
+                emotion=emotion,
+                family=data.get('family'),
+                confidence=float(data.get('confidence', 1.0)),
+                timestamp=data.get('timestamp'),
+            )
+            return jsonify(result)
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+
+    @app.route('/api/emotion/transition/trajectory/<user_id>', methods=['GET'])
+    def transition_trajectory(user_id):
+        """Get emotion timeline for a user (therapist dashboard)"""
+        if not transition_tracker:
+            return jsonify({'error': 'Transition tracker unavailable'}), 503
+        try:
+            window = request.args.get('window_hours', 24, type=float)
+            result = transition_tracker.get_trajectory(user_id, window_hours=window)
+            return jsonify(result)
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+
+    @app.route('/api/emotion/transition/patterns/<user_id>', methods=['GET'])
+    def transition_patterns(user_id):
+        """Detect concerning patterns in a user's emotion history"""
+        if not transition_tracker:
+            return jsonify({'error': 'Transition tracker unavailable'}), 503
+        try:
+            alerts = transition_tracker.detect_patterns(user_id)
+            return jsonify({
+                'user_id': user_id,
+                'alerts': alerts,
+                'count': len(alerts),
+            })
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+
+    @app.route('/api/emotion/transition/dashboard/<user_id>', methods=['GET'])
+    def transition_dashboard(user_id):
+        """Full therapist dashboard summary for a user"""
+        if not transition_tracker:
+            return jsonify({'error': 'Transition tracker unavailable'}), 503
+        try:
+            summary = transition_tracker.get_dashboard_summary(user_id)
+            return jsonify(summary)
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+
     return app
 
 
@@ -1456,6 +1574,10 @@ def main():
     print(f"  - GET  /api/calibration/retrain-status")
     print(f"  - POST /api/calibration/retrain")
     print(f"  - GET  /api/calibration/retrain-log")
+    print(f"  - POST /api/emotion/transition/record")
+    print(f"  - GET  /api/emotion/transition/trajectory/<user_id>")
+    print(f"  - GET  /api/emotion/transition/patterns/<user_id>")
+    print(f"  - GET  /api/emotion/transition/dashboard/<user_id>")
     print(f"\n  Starting server on http://{args.host}:{args.port}")
     print("=" * 60 + "\n")
 

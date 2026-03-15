@@ -30,6 +30,7 @@ import os
 import re
 import pickle
 import random
+import argparse
 import numpy as np
 import pandas as pd
 from pathlib import Path
@@ -82,9 +83,239 @@ def format_tagged(emotion, text):
     return f"<{family}:{emotion}>{text}</{family}:{emotion}>"
 
 
+# ─── HuggingFace Dataset Loaders ────────────────────────────────────────────
+
+def load_hf_dair_emotion(max_samples: int = 0):
+    """Load dair-ai/emotion dataset directly from HuggingFace Hub.
+
+    Returns list of (text, emotion) tuples using full 416K unsplit dataset.
+    Falls back to 20K split version if unsplit unavailable.
+
+    Connected to: ML Training & Prediction Systems
+    """
+    try:
+        from datasets import load_dataset
+    except ImportError:
+        print("  [!] HuggingFace datasets not installed. Run: pip install datasets")
+        return []
+
+    label_map = {0: 'sadness', 1: 'joy', 2: 'love', 3: 'anger', 4: 'fear', 5: 'surprise'}
+    data = []
+
+    try:
+        print("  Loading dair-ai/emotion (unsplit, ~416K samples) from HuggingFace...")
+        ds = load_dataset('dair-ai/emotion', 'unsplit', split='train')
+        source = "dair-ai/emotion (unsplit)"
+    except Exception:
+        try:
+            print("  Loading dair-ai/emotion (split, ~20K samples) from HuggingFace...")
+            ds = load_dataset('dair-ai/emotion', 'split', split='train')
+            source = "dair-ai/emotion (split)"
+        except Exception as e:
+            print(f"  [!] Failed to load dair-ai/emotion: {e}")
+            return []
+
+    for row in ds:
+        text = str(row['text']).strip()
+        label = row['label']
+        emotion = label_map.get(label, 'neutral')
+        if text and len(text) > 10:
+            data.append((text, emotion))
+
+    if max_samples > 0 and len(data) > max_samples:
+        random.shuffle(data)
+        data = data[:max_samples]
+
+    print(f"  Loaded {len(data)} samples from {source}")
+    return data
+
+
+def load_hf_go_emotions(max_samples: int = 0):
+    """Load google-research-datasets/go_emotions from HuggingFace Hub.
+
+    58K Reddit comments with 28 emotion labels mapped to Quantara 32 taxonomy.
+
+    Connected to: ML Training & Prediction Systems
+    """
+    try:
+        from datasets import load_dataset
+    except ImportError:
+        print("  [!] HuggingFace datasets not installed. Run: pip install datasets")
+        return []
+
+    go_to_quantara = {
+        'admiration': 'gratitude',
+        'amusement': 'fun',
+        'anger': 'anger',
+        'annoyance': 'frustration',
+        'approval': 'pride',
+        'caring': 'compassion',
+        'confusion': 'worry',
+        'curiosity': 'enthusiasm',
+        'desire': 'love',
+        'disappointment': 'sadness',
+        'disapproval': 'contempt',
+        'disgust': 'disgust',
+        'embarrassment': 'shame',
+        'excitement': 'excitement',
+        'fear': 'fear',
+        'gratitude': 'gratitude',
+        'grief': 'grief',
+        'joy': 'joy',
+        'love': 'love',
+        'nervousness': 'anxiety',
+        'optimism': 'hope',
+        'pride': 'pride',
+        'realization': 'surprise',
+        'relief': 'relief',
+        'remorse': 'guilt',
+        'sadness': 'sadness',
+        'surprise': 'surprise',
+        'neutral': 'neutral',
+    }
+
+    data = []
+    try:
+        print("  Loading go_emotions (~58K samples) from HuggingFace...")
+        ds = load_dataset('google-research-datasets/go_emotions', 'simplified', split='train')
+        label_names = ds.features['labels'].feature.names
+
+        for row in ds:
+            text = str(row['text']).strip()
+            labels = row['labels']
+            if not text or len(text) <= 10 or not labels:
+                continue
+            go_label = label_names[labels[0]]
+            emotion = go_to_quantara.get(go_label, 'neutral')
+            data.append((text, emotion))
+
+    except Exception as e:
+        print(f"  [!] Failed to load go_emotions: {e}")
+        return []
+
+    if max_samples > 0 and len(data) > max_samples:
+        random.shuffle(data)
+        data = data[:max_samples]
+
+    print(f"  Loaded {len(data)} samples from go_emotions")
+    return data
+
+
+def load_hf_empathetic_dialogues(max_samples: int = 0):
+    """Load empathetic_dialogues from HuggingFace Hub.
+
+    25K dialogues with 32 emotion context labels mapped to Quantara taxonomy.
+
+    Connected to: ML Training & Prediction Systems
+    """
+    try:
+        from datasets import load_dataset
+    except ImportError:
+        print("  [!] HuggingFace datasets not installed. Run: pip install datasets")
+        return []
+
+    ed_to_quantara = {
+        'surprised': 'surprise', 'excited': 'excitement', 'angry': 'anger',
+        'proud': 'pride', 'sad': 'sadness', 'annoyed': 'frustration',
+        'grateful': 'gratitude', 'lonely': 'sadness', 'afraid': 'fear',
+        'terrified': 'fear', 'guilty': 'guilt', 'impressed': 'surprise',
+        'disgusted': 'disgust', 'hopeful': 'hope', 'confident': 'pride',
+        'furious': 'anger', 'anxious': 'anxiety', 'anticipating': 'enthusiasm',
+        'joyful': 'joy', 'nostalgic': 'nostalgia', 'disappointed': 'sadness',
+        'prepared': 'calm', 'jealous': 'jealousy', 'content': 'calm',
+        'devastated': 'grief', 'sentimental': 'nostalgia', 'caring': 'compassion',
+        'trusting': 'calm', 'ashamed': 'shame', 'apprehensive': 'anxiety',
+        'faithful': 'love', 'embarrassed': 'shame', 'neutral': 'neutral',
+    }
+
+    data = []
+    try:
+        print("  Loading empathetic_dialogues (~25K dialogues) from HuggingFace...")
+        ds = load_dataset('empathetic_dialogues', split='train')
+
+        for row in ds:
+            text = str(row['utterance']).strip()
+            text = text.replace('_comma_', ',').replace('_period_', '.')
+            context = str(row.get('context', '')).strip().lower()
+            emotion = ed_to_quantara.get(context, None)
+            if text and len(text) > 10 and emotion:
+                data.append((text, emotion))
+
+    except Exception as e:
+        print(f"  [!] Failed to load empathetic_dialogues: {e}")
+        return []
+
+    if max_samples > 0 and len(data) > max_samples:
+        random.shuffle(data)
+        data = data[:max_samples]
+
+    print(f"  Loaded {len(data)} samples from empathetic_dialogues")
+    return data
+
+
+def load_hf_daily_dialog(max_samples: int = 0):
+    """Load daily_dialog from HuggingFace Hub.
+
+    13K dialogues with per-utterance emotion labels.
+    Labels: 0=no_emotion, 1=anger, 2=disgust, 3=fear, 4=happiness, 5=sadness, 6=surprise.
+
+    Connected to: ML Training & Prediction Systems
+    """
+    try:
+        from datasets import load_dataset
+    except ImportError:
+        print("  [!] HuggingFace datasets not installed. Run: pip install datasets")
+        return []
+
+    label_map = {
+        0: None,           # no emotion -- skip
+        1: 'anger',
+        2: 'disgust',
+        3: 'fear',
+        4: 'joy',
+        5: 'sadness',
+        6: 'surprise',
+    }
+
+    data = []
+    try:
+        print("  Loading daily_dialog (~13K dialogues) from HuggingFace...")
+        ds = load_dataset('daily_dialog', split='train')
+
+        for row in ds:
+            utterances = row['dialog']
+            emotions = row['emotion']
+            for text, label in zip(utterances, emotions):
+                text = str(text).strip()
+                emotion = label_map.get(label, None)
+                if text and len(text) > 10 and emotion:
+                    data.append((text, emotion))
+
+    except Exception as e:
+        print(f"  [!] Failed to load daily_dialog: {e}")
+        return []
+
+    if max_samples > 0 and len(data) > max_samples:
+        random.shuffle(data)
+        data = data[:max_samples]
+
+    print(f"  Loaded {len(data)} samples from daily_dialog")
+    return data
+
+
+def _merge_hf_into_emotion_data(emotion_data, hf_pairs):
+    """Merge list of (text, emotion) tuples into the emotion_data dict."""
+    count = 0
+    for text, emotion in hf_pairs:
+        if emotion in emotion_data:
+            emotion_data[emotion].append(text)
+            count += 1
+    return count
+
+
 # ─── Dataset Loaders ─────────────────────────────────────────────────────────
 
-def load_emotion_datasets():
+def load_emotion_datasets(use_hf=False):
     """Load all emotion datasets and combine into training corpus.
 
     Returns dict: {emotion: [text, text, ...]}
@@ -725,6 +956,33 @@ def load_emotion_datasets():
     else:
         print(f"  [-] EEG cognitive not found: {eeg_path}")
 
+    # ─── HuggingFace datasets (when --use-hf is set) ──────────────────────
+    if use_hf:
+        print("\n  Loading HuggingFace datasets...")
+        hf_total = 0
+
+        hf_data = load_hf_dair_emotion()
+        n = _merge_hf_into_emotion_data(emotion_data, hf_data)
+        hf_total += n
+        print(f"  [+] Merged dair-ai/emotion: {n} samples")
+
+        hf_data = load_hf_go_emotions()
+        n = _merge_hf_into_emotion_data(emotion_data, hf_data)
+        hf_total += n
+        print(f"  [+] Merged go_emotions: {n} samples")
+
+        hf_data = load_hf_empathetic_dialogues()
+        n = _merge_hf_into_emotion_data(emotion_data, hf_data)
+        hf_total += n
+        print(f"  [+] Merged empathetic_dialogues: {n} samples")
+
+        hf_data = load_hf_daily_dialog()
+        n = _merge_hf_into_emotion_data(emotion_data, hf_data)
+        hf_total += n
+        print(f"  [+] Merged daily_dialog: {n} samples")
+
+        print(f"  [+] Total HuggingFace samples merged: {hf_total}")
+
     # Print per-emotion counts
     print("\n  Per-emotion counts (Tier 1 — direct):")
     for family, emotions in EMOTION_FAMILIES.items():
@@ -1109,11 +1367,17 @@ def create_psychology_prompts():
 
 # ─── Main Preparation ─────────────────────────────────────────────────────────
 
-def prepare_data():
-    """Main data preparation function"""
+def prepare_data(use_hf=False):
+    """Main data preparation function.
+
+    Args:
+        use_hf: If True, load additional data from HuggingFace Hub
+                (dair-ai/emotion, go_emotions, empathetic_dialogues, daily_dialog)
+                and merge with any local CSV data that exists.
+    """
 
     # Load all emotion data (Tier 1 — direct from datasets)
-    emotion_data = load_emotion_datasets()
+    emotion_data = load_emotion_datasets(use_hf=use_hf)
 
     # Tier 2 — reclassify derived emotions
     emotion_data = reclassify_derived_emotions(emotion_data)
@@ -1243,4 +1507,13 @@ def prepare_data():
 
 
 if __name__ == "__main__":
-    prepare_data()
+    parser = argparse.ArgumentParser(
+        description="Prepare Quantara emotion data for nanoGPT training (32-emotion taxonomy)"
+    )
+    parser.add_argument(
+        '--use-hf', action='store_true',
+        help='Load additional data from HuggingFace Hub (dair-ai/emotion, go_emotions, '
+             'empathetic_dialogues, daily_dialog) and merge with local CSV data'
+    )
+    args = parser.parse_args()
+    prepare_data(use_hf=args.use_hf)

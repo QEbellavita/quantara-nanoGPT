@@ -13,6 +13,7 @@ Supports two embedding modes:
 Usage:
     python train_emotion_classifier.py --use-sentence-transformer
     python train_emotion_classifier.py --gpt-checkpoint out-quantara-emotion/ckpt.pt
+    python train_emotion_classifier.py --use-sentence-transformer --distillation --distill-alpha 0.3 --distill-temperature 2.0
 ===============================================================================
 """
 
@@ -437,26 +438,38 @@ class RealBiometricSampler:
 
 
 class EmotionDataset(Dataset):
-    """Dataset of text embeddings + biometrics + pose + labels (emotion + family)."""
+    """Dataset of text embeddings + biometrics + pose + labels (emotion + family).
 
-    def __init__(self, embeddings, biometrics, pose_features, emotion_labels, family_labels):
+    Optionally stores teacher_probs (32-dim soft labels from GoEmotions)
+    for knowledge distillation.
+    """
+
+    def __init__(self, embeddings, biometrics, pose_features, emotion_labels, family_labels,
+                 teacher_probs=None):
         self.embeddings = torch.tensor(embeddings, dtype=torch.float32)
         self.biometrics = torch.tensor(biometrics, dtype=torch.float32)
         self.pose_features = torch.tensor(pose_features, dtype=torch.float32)
         self.emotion_labels = torch.tensor(emotion_labels, dtype=torch.long)
         self.family_labels = torch.tensor(family_labels, dtype=torch.long)
+        if teacher_probs is not None:
+            self.teacher_probs = torch.tensor(teacher_probs, dtype=torch.float32)
+        else:
+            self.teacher_probs = None
 
     def __len__(self):
         return len(self.emotion_labels)
 
     def __getitem__(self, idx):
-        return (
+        item = (
             self.embeddings[idx],
             self.biometrics[idx],
             self.pose_features[idx],
             self.emotion_labels[idx],
             self.family_labels[idx],
         )
+        if self.teacher_probs is not None:
+            item = item + (self.teacher_probs[idx],)
+        return item
 
 
 def load_dair_emotion_dataset(max_samples: int = 0):
@@ -506,7 +519,229 @@ def load_dair_emotion_dataset(max_samples: int = 0):
     return data
 
 
-def load_emotion_data(downloads_dir: Path, use_hf_datasets: bool = False, hf_max_samples: int = 0):
+def load_hf_go_emotions(max_samples: int = 0):
+    """Load google-research-datasets/go_emotions from HuggingFace Hub.
+
+    58K Reddit comments with 28 emotion labels mapped to Quantara 32 taxonomy.
+    Uses the same mapping as GoEmotionsEncoder.GOEMOTIONS_TO_QUANTARA.
+
+    Connected to: ML Training & Prediction Systems
+    """
+    try:
+        from datasets import load_dataset
+    except ImportError:
+        print("  [!] HuggingFace datasets not installed. Run: pip install datasets")
+        return []
+
+    # Same mapping used by GoEmotionsEncoder
+    go_to_quantara = {
+        'admiration': 'gratitude',
+        'amusement': 'fun',
+        'anger': 'anger',
+        'annoyance': 'frustration',
+        'approval': 'pride',
+        'caring': 'compassion',
+        'confusion': 'worry',
+        'curiosity': 'enthusiasm',
+        'desire': 'love',
+        'disappointment': 'sadness',
+        'disapproval': 'contempt',
+        'disgust': 'disgust',
+        'embarrassment': 'shame',
+        'excitement': 'excitement',
+        'fear': 'fear',
+        'gratitude': 'gratitude',
+        'grief': 'grief',
+        'joy': 'joy',
+        'love': 'love',
+        'nervousness': 'anxiety',
+        'optimism': 'hope',
+        'pride': 'pride',
+        'realization': 'surprise',
+        'relief': 'relief',
+        'remorse': 'guilt',
+        'sadness': 'sadness',
+        'surprise': 'surprise',
+        'neutral': 'neutral',
+    }
+
+    data = []
+    try:
+        print("  Loading go_emotions (~58K samples) from HuggingFace...")
+        ds = load_dataset('google-research-datasets/go_emotions', 'simplified', split='train')
+
+        # Build id-to-label map from dataset features
+        label_names = ds.features['labels'].feature.names
+
+        for row in ds:
+            text = str(row['text']).strip()
+            labels = row['labels']
+            if not text or len(text) <= 10 or not labels:
+                continue
+            # Use first (primary) label
+            go_label = label_names[labels[0]]
+            emotion = go_to_quantara.get(go_label, 'neutral')
+            data.append((text, emotion))
+
+    except Exception as e:
+        print(f"  [!] Failed to load go_emotions: {e}")
+        return []
+
+    if max_samples > 0 and len(data) > max_samples:
+        random.shuffle(data)
+        data = data[:max_samples]
+
+    print(f"  Loaded {len(data)} samples from go_emotions")
+    return data
+
+
+def load_hf_tweet_eval_emotion(max_samples: int = 0):
+    """Load tweet_eval emotion subset from HuggingFace Hub.
+
+    4-class emotion classification from tweets: anger, joy, optimism, sadness.
+
+    Connected to: ML Training & Prediction Systems
+    """
+    try:
+        from datasets import load_dataset
+    except ImportError:
+        print("  [!] HuggingFace datasets not installed. Run: pip install datasets")
+        return []
+
+    label_map = {0: 'anger', 1: 'joy', 2: 'hope', 3: 'sadness'}
+    data = []
+
+    try:
+        print("  Loading tweet_eval/emotion from HuggingFace...")
+        ds = load_dataset('tweet_eval', 'emotion', split='train')
+
+        for row in ds:
+            text = str(row['text']).strip()
+            label = row['label']
+            emotion = label_map.get(label, 'neutral')
+            if text and len(text) > 10:
+                data.append((text, emotion))
+
+    except Exception as e:
+        print(f"  [!] Failed to load tweet_eval/emotion: {e}")
+        return []
+
+    if max_samples > 0 and len(data) > max_samples:
+        random.shuffle(data)
+        data = data[:max_samples]
+
+    print(f"  Loaded {len(data)} samples from tweet_eval/emotion")
+    return data
+
+
+def load_hf_empathetic_dialogues(max_samples: int = 0):
+    """Load empathetic_dialogues from HuggingFace Hub.
+
+    25K dialogues with 32 emotion context labels mapped to Quantara taxonomy.
+
+    Connected to: ML Training & Prediction Systems
+    """
+    try:
+        from datasets import load_dataset
+    except ImportError:
+        print("  [!] HuggingFace datasets not installed. Run: pip install datasets")
+        return []
+
+    # Map empathetic_dialogues context labels to Quantara taxonomy
+    ed_to_quantara = {
+        'surprised': 'surprise', 'excited': 'excitement', 'angry': 'anger',
+        'proud': 'pride', 'sad': 'sadness', 'annoyed': 'frustration',
+        'grateful': 'gratitude', 'lonely': 'sadness', 'afraid': 'fear',
+        'terrified': 'fear', 'guilty': 'guilt', 'impressed': 'surprise',
+        'disgusted': 'disgust', 'hopeful': 'hope', 'confident': 'pride',
+        'furious': 'anger', 'anxious': 'anxiety', 'anticipating': 'enthusiasm',
+        'joyful': 'joy', 'nostalgic': 'nostalgia', 'disappointed': 'sadness',
+        'prepared': 'calm', 'jealous': 'jealousy', 'content': 'calm',
+        'devastated': 'grief', 'sentimental': 'nostalgia', 'caring': 'compassion',
+        'trusting': 'calm', 'ashamed': 'shame', 'apprehensive': 'anxiety',
+        'faithful': 'love', 'embarrassed': 'shame', 'neutral': 'neutral',
+    }
+
+    data = []
+    try:
+        print("  Loading empathetic_dialogues (~25K dialogues) from HuggingFace...")
+        ds = load_dataset('empathetic_dialogues', split='train')
+
+        for row in ds:
+            text = str(row['utterance']).strip()
+            # Remove encoding tokens that appear in this dataset
+            text = text.replace('_comma_', ',').replace('_period_', '.')
+            context = str(row.get('context', '')).strip().lower()
+            emotion = ed_to_quantara.get(context, None)
+            if text and len(text) > 10 and emotion:
+                data.append((text, emotion))
+
+    except Exception as e:
+        print(f"  [!] Failed to load empathetic_dialogues: {e}")
+        return []
+
+    if max_samples > 0 and len(data) > max_samples:
+        random.shuffle(data)
+        data = data[:max_samples]
+
+    print(f"  Loaded {len(data)} samples from empathetic_dialogues")
+    return data
+
+
+def load_hf_daily_dialog(max_samples: int = 0):
+    """Load daily_dialog from HuggingFace Hub.
+
+    13K dialogues with per-utterance emotion labels.
+    Labels: 0=no_emotion, 1=anger, 2=disgust, 3=fear, 4=happiness, 5=sadness, 6=surprise.
+
+    Connected to: ML Training & Prediction Systems
+    """
+    try:
+        from datasets import load_dataset
+    except ImportError:
+        print("  [!] HuggingFace datasets not installed. Run: pip install datasets")
+        return []
+
+    label_map = {
+        0: None,           # no emotion -- skip
+        1: 'anger',
+        2: 'disgust',
+        3: 'fear',
+        4: 'joy',
+        5: 'sadness',
+        6: 'surprise',
+    }
+
+    data = []
+    try:
+        print("  Loading daily_dialog (~13K dialogues) from HuggingFace...")
+        ds = load_dataset('daily_dialog', split='train')
+
+        for row in ds:
+            utterances = row['dialog']
+            emotions = row['emotion']
+            for text, label in zip(utterances, emotions):
+                text = str(text).strip()
+                emotion = label_map.get(label, None)
+                if text and len(text) > 10 and emotion:
+                    data.append((text, emotion))
+
+    except Exception as e:
+        print(f"  [!] Failed to load daily_dialog: {e}")
+        return []
+
+    if max_samples > 0 and len(data) > max_samples:
+        random.shuffle(data)
+        data = data[:max_samples]
+
+    print(f"  Loaded {len(data)} samples from daily_dialog")
+    return data
+
+
+def load_emotion_data(downloads_dir: Path, use_hf_datasets: bool = False, hf_max_samples: int = 0,
+                      use_hf_all: bool = False, use_hf_go_emotions: bool = False,
+                      use_hf_tweet_eval: bool = False, use_hf_empathetic: bool = False,
+                      use_hf_daily_dialog: bool = False):
     """Load emotion-labeled text data for all 32 emotions."""
     all_data = []
 
@@ -533,6 +768,23 @@ def load_emotion_data(downloads_dir: Path, use_hf_datasets: bool = False, hf_max
                     all_data.append((text, emotion))
 
             print(f"  Loaded {len(all_data)} samples from text.csv")
+
+    # Load additional HuggingFace emotion datasets
+    if use_hf_all or use_hf_go_emotions:
+        go_data = load_hf_go_emotions(max_samples=hf_max_samples)
+        all_data.extend(go_data)
+
+    if use_hf_all or use_hf_tweet_eval:
+        tweet_data = load_hf_tweet_eval_emotion(max_samples=hf_max_samples)
+        all_data.extend(tweet_data)
+
+    if use_hf_all or use_hf_empathetic:
+        emp_data = load_hf_empathetic_dialogues(max_samples=hf_max_samples)
+        all_data.extend(emp_data)
+
+    if use_hf_all or use_hf_daily_dialog:
+        dd_data = load_hf_daily_dialog(max_samples=hf_max_samples)
+        all_data.extend(dd_data)
 
     # Try archive training.csv
     archive_path = downloads_dir / "archive (4) 3" / "training.csv"
@@ -691,6 +943,21 @@ def extract_embeddings_gpt(gpt, texts, encode_fn, device, batch_size=32):
     return np.array(embeddings)
 
 
+def extract_teacher_probs(texts, go_encoder, device, batch_size=32):
+    """Extract GoEmotions teacher probabilities mapped to 32-dim Quantara space.
+
+    Uses GoEmotionsEncoder to get 28-class predictions, then maps them
+    to the 32-emotion Quantara taxonomy via map_go_probs_to_quantara().
+
+    Returns numpy array of shape (N, 32).
+    """
+    print("  Extracting GoEmotions teacher probabilities for distillation...")
+    go_probs_28 = go_encoder.predict_emotions_batch(texts, batch_size=batch_size)  # (N, 28)
+    quantara_probs_32 = go_encoder.map_go_probs_to_quantara(go_probs_28)  # (N, 32)
+    print(f"    Teacher probs: {quantara_probs_32.shape} (mapped 28 GoEmotions -> 32 Quantara)")
+    return quantara_probs_32.numpy()
+
+
 def train(args):
     """Main training function."""
     print("=" * 60)
@@ -778,12 +1045,32 @@ def train(args):
             encode_fn = lambda s: enc.encode(s, allowed_special={"<|endoftext|>"})
             print("  Using GPT-2 BPE tokenizer")
 
+    # Distillation setup: ensure GoEmotions encoder is available as teacher
+    distill_encoder = None
+    if args.distillation:
+        if go_encoder is not None:
+            # Reuse the already-loaded GoEmotions encoder as teacher
+            distill_encoder = go_encoder
+            print(f"\n  Distillation: reusing GoEmotions encoder as teacher (alpha={args.distill_alpha}, T={args.distill_temperature})")
+        elif HAS_TRANSFORMERS:
+            print(f"\n  Distillation: loading GoEmotions teacher ({args.go_emotions_model})...")
+            distill_encoder = GoEmotionsEncoder(args.go_emotions_model, device=device)
+            print(f"    Teacher loaded (alpha={args.distill_alpha}, T={args.distill_temperature})")
+        else:
+            print("  [!] Distillation requires transformers library. Disabling distillation.")
+            args.distillation = False
+
     # Load emotion data
     print(f"\n  Loading emotion data from {args.data_dir}...")
     data = load_emotion_data(
         Path(args.data_dir),
         use_hf_datasets=args.use_hf_datasets,
         hf_max_samples=args.hf_max_samples,
+        use_hf_all=args.use_hf_all,
+        use_hf_go_emotions=args.use_hf_go_emotions,
+        use_hf_tweet_eval=args.use_hf_tweet_eval,
+        use_hf_empathetic=args.use_hf_empathetic,
+        use_hf_daily_dialog=args.use_hf_daily_dialog,
     )
 
     # Load external data if provided
@@ -834,6 +1121,17 @@ def train(args):
     else:
         train_embeddings = extract_embeddings_gpt(gpt, train_texts, encode_fn, device)
         val_embeddings = extract_embeddings_gpt(gpt, val_texts, encode_fn, device)
+
+    # Extract teacher probabilities for distillation (if enabled)
+    train_teacher_probs = None
+    val_teacher_probs = None
+    if args.distillation and distill_encoder is not None:
+        train_teacher_probs = extract_teacher_probs(
+            train_texts, distill_encoder, device, batch_size=args.batch_size
+        )
+        val_teacher_probs = extract_teacher_probs(
+            val_texts, distill_encoder, device, batch_size=args.batch_size
+        )
 
     # Initialize models first
     bio_encoder = BiometricEncoder(output_dim=16).to(device)
@@ -886,11 +1184,13 @@ def train(args):
     # Create datasets
     train_dataset = EmotionDataset(
         train_embeddings, train_bio_features, train_pose_features,
-        train_emotion_labels, train_family_labels
+        train_emotion_labels, train_family_labels,
+        teacher_probs=train_teacher_probs,
     )
     val_dataset = EmotionDataset(
         val_embeddings, val_bio_features, val_pose_features,
-        val_emotion_labels, val_family_labels
+        val_emotion_labels, val_family_labels,
+        teacher_probs=val_teacher_probs,
     )
 
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
@@ -913,13 +1213,22 @@ def train(args):
 
     emotion_criterion = nn.NLLLoss()
     family_criterion = nn.NLLLoss()
+    distill_criterion = nn.KLDivLoss(reduction='batchmean')
 
     # Loss weights
     FAMILY_WEIGHT = 0.3
     EMOTION_WEIGHT = 0.7
 
+    # Distillation config
+    use_distillation = args.distillation and train_dataset.teacher_probs is not None
+    distill_alpha = args.distill_alpha
+    distill_temperature = args.distill_temperature
+
     # Training loop
-    print("\n  Training (two-stage: family + sub-emotion)...")
+    mode_str = "family + sub-emotion"
+    if use_distillation:
+        mode_str += f" + distillation (alpha={distill_alpha}, T={distill_temperature})"
+    print(f"\n  Training (two-stage: {mode_str})...")
     best_val_acc = 0.0
     patience_counter = 0
 
@@ -929,11 +1238,19 @@ def train(args):
         pose_encoder.train()
         fusion_head.train()
         train_loss = 0.0
+        train_distill_loss = 0.0
         train_emotion_correct = 0
         train_family_correct = 0
         train_total = 0
 
-        for text_emb, bio_feat, pose_feat, emotion_labels, family_labels in train_loader:
+        for batch in train_loader:
+            # Unpack — with or without teacher probs
+            if use_distillation:
+                text_emb, bio_feat, pose_feat, emotion_labels, family_labels, t_probs = batch
+                t_probs = t_probs.to(device)
+            else:
+                text_emb, bio_feat, pose_feat, emotion_labels, family_labels = batch
+
             text_emb = text_emb.to(device)
             bio_feat = bio_feat.to(device)
             pose_feat = pose_feat.to(device)
@@ -946,10 +1263,24 @@ def train(args):
             pose_emb = pose_encoder(pose_feat)
             emotion_probs, family_probs = fusion_head(text_emb, bio_emb, pose_emb)
 
-            # Two-stage loss
+            # Two-stage hard loss
             emotion_loss = emotion_criterion(torch.log(emotion_probs + 1e-8), emotion_labels)
             family_loss = family_criterion(torch.log(family_probs + 1e-8), family_labels)
-            loss = EMOTION_WEIGHT * emotion_loss + FAMILY_WEIGHT * family_loss
+            hard_loss = EMOTION_WEIGHT * emotion_loss + FAMILY_WEIGHT * family_loss
+
+            if use_distillation:
+                # Temperature-scaled soft targets from teacher
+                teacher_soft = torch.softmax(t_probs / distill_temperature, dim=-1)
+                # Temperature-scaled log-probs from student
+                student_log_soft = torch.log_softmax(
+                    torch.log(emotion_probs + 1e-8) / distill_temperature, dim=-1
+                )
+                # KL divergence distillation loss (scaled by T^2 per Hinton et al.)
+                distill_loss = distill_criterion(student_log_soft, teacher_soft) * (distill_temperature ** 2)
+                loss = (1 - distill_alpha) * hard_loss + distill_alpha * distill_loss
+                train_distill_loss += distill_loss.item()
+            else:
+                loss = hard_loss
 
             loss.backward()
             optimizer.step()
@@ -973,12 +1304,13 @@ def train(args):
         val_total = 0
 
         with torch.no_grad():
-            for text_emb, bio_feat, pose_feat, emotion_labels, family_labels in val_loader:
-                text_emb = text_emb.to(device)
-                bio_feat = bio_feat.to(device)
-                pose_feat = pose_feat.to(device)
-                emotion_labels = emotion_labels.to(device)
-                family_labels = family_labels.to(device)
+            for batch in val_loader:
+                # Unpack — skip teacher probs during validation (only need accuracy)
+                text_emb = batch[0].to(device)
+                bio_feat = batch[1].to(device)
+                pose_feat = batch[2].to(device)
+                emotion_labels = batch[3].to(device)
+                family_labels = batch[4].to(device)
 
                 bio_emb = bio_encoder(bio_feat)
                 pose_emb = pose_encoder(pose_feat)
@@ -993,11 +1325,15 @@ def train(args):
         val_emotion_acc = val_emotion_correct / val_total
         val_family_acc = val_family_correct / val_total
 
-        print(
+        epoch_msg = (
             f"  Epoch {epoch+1:2d}/{args.epochs}: "
             f"emotion_acc={train_emotion_acc:.4f}/{val_emotion_acc:.4f}, "
             f"family_acc={train_family_acc:.4f}/{val_family_acc:.4f}"
         )
+        if use_distillation:
+            avg_distill = train_distill_loss / max(train_total / args.batch_size, 1)
+            epoch_msg += f", distill_loss={avg_distill:.4f}"
+        print(epoch_msg)
 
         # Early stopping on emotion accuracy
         if val_emotion_acc > best_val_acc:
@@ -1026,6 +1362,12 @@ def train(args):
                 checkpoint_data['go_emotions_combined'] = go_combined
             elif use_sentence_transformer:
                 checkpoint_data['sentence_model'] = args.sentence_model
+            if use_distillation:
+                checkpoint_data['distillation'] = {
+                    'alpha': distill_alpha,
+                    'temperature': distill_temperature,
+                    'teacher': args.go_emotions_model,
+                }
             torch.save(checkpoint_data, 'checkpoints/emotion_fusion_head.pt')
             print(f"    -> Saved checkpoint (val_emotion={val_emotion_acc:.4f}, val_family={val_family_acc:.4f})")
         else:
@@ -1062,6 +1404,16 @@ if __name__ == '__main__':
                         help='Load dair-ai/emotion from HuggingFace Hub (full 416K, replaces text.csv)')
     parser.add_argument('--hf-max-samples', type=int, default=0,
                         help='Max samples from HF dataset (0 = all)')
+    parser.add_argument('--use-hf-all', action='store_true',
+                        help='Load ALL additional HuggingFace emotion datasets (go_emotions, tweet_eval, empathetic_dialogues, daily_dialog)')
+    parser.add_argument('--use-hf-go-emotions', action='store_true',
+                        help='Load go_emotions (58K Reddit comments, 28 emotion labels)')
+    parser.add_argument('--use-hf-tweet-eval', action='store_true',
+                        help='Load tweet_eval/emotion (4-class tweets: anger, joy, optimism, sadness)')
+    parser.add_argument('--use-hf-empathetic', action='store_true',
+                        help='Load empathetic_dialogues (25K dialogues, 32 emotion contexts)')
+    parser.add_argument('--use-hf-daily-dialog', action='store_true',
+                        help='Load daily_dialog (13K dialogues, 7 emotion labels)')
     # Data & training
     parser.add_argument('--data-dir', default=os.path.expanduser('~/Downloads'))
     parser.add_argument('--external-data', default=None,
@@ -1074,6 +1426,13 @@ if __name__ == '__main__':
     parser.add_argument('--val-split', type=float, default=0.1)
     parser.add_argument('--patience', type=int, default=3)
     parser.add_argument('--device', default='auto')
+    # Knowledge distillation from GoEmotions teacher
+    parser.add_argument('--distillation', action='store_true',
+                        help='Enable soft-label knowledge distillation from GoEmotions teacher')
+    parser.add_argument('--distill-alpha', type=float, default=0.3,
+                        help='Distillation weight: loss = (1-alpha)*hard + alpha*distill (default: 0.3)')
+    parser.add_argument('--distill-temperature', type=float, default=2.0,
+                        help='Temperature for softening teacher/student probs (default: 2.0)')
 
     args = parser.parse_args()
     train(args)
