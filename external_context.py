@@ -334,11 +334,12 @@ class ExternalContextProvider:
     - Real-time Data (RuView WiFi sensing)
     """
 
-    def __init__(self):
+    def __init__(self, profile_engine=None):
         self.weather = WeatherProvider()
         self.nutrition = NutritionProvider()
         self.sentiment = SentimentValidator()
         self._ruview = None  # Lazy-loaded
+        self.profile_engine = profile_engine
 
     @property
     def ruview(self):
@@ -475,5 +476,16 @@ class ExternalContextProvider:
             if ruview_bio:
                 result['ruview_data'] = ruview_bio
                 result['ruview_insight'] = self.ruview.get_insight()
+
+        if self.profile_engine:
+            try:
+                from datetime import datetime
+                user_id = context.get('user_id', 'default')
+                self.profile_engine.log_event(user_id, 'temporal', 'time_correlation', {
+                    'hour': datetime.now().hour,
+                    'day_of_week': datetime.now().strftime('%A'),
+                }, 'nanogpt')
+            except Exception:
+                pass
 
         return result
