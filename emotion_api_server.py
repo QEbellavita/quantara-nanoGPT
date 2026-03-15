@@ -83,6 +83,12 @@ try:
 except ImportError:
     HAS_TRANSITION_ENGINE = False
 
+try:
+    from emotion_websocket import init_websocket, emit_emotion_update as ws_emit_emotion
+    HAS_WEBSOCKET = True
+except ImportError:
+    HAS_WEBSOCKET = False
+
 
 # ─── 32-Emotion Taxonomy ────────────────────────────────────────────────────
 
@@ -806,6 +812,9 @@ def create_app(model: EmotionGPTModel) -> Flask:
     # Emotion Transition Engine (graph-based pathfinding + adaptive weights)
     transition_engine = EmotionTransitionEngine() if HAS_TRANSITION_ENGINE else None
 
+    # WebSocket streaming (emotion/biometrics/system namespaces)
+    socketio = init_websocket(app) if HAS_WEBSOCKET else None
+
     # External context provider (weather, nutrition, sentiment)
     context_provider = ExternalContextProvider() if HAS_EXTERNAL_CONTEXT else None
 
@@ -908,6 +917,13 @@ def create_app(model: EmotionGPTModel) -> Flask:
 
             biometrics = data.get('biometrics')
             result = model.analyze(text, biometrics)
+
+            # Stream emotion update via WebSocket
+            if HAS_WEBSOCKET:
+                try:
+                    ws_emit_emotion(result)
+                except Exception:
+                    pass
 
             return jsonify({**result, 'status': 'success'})
 
@@ -1305,6 +1321,13 @@ def create_app(model: EmotionGPTModel) -> Flask:
                 result['presence'] = context_provider.get_ruview_presence()
             else:
                 result['ruview_source'] = False
+
+            # Stream emotion update via WebSocket
+            if HAS_WEBSOCKET:
+                try:
+                    ws_emit_emotion(result)
+                except Exception:
+                    pass
 
             return jsonify(result)
         except Exception as e:

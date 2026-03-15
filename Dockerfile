@@ -9,4 +9,4 @@ COPY . .
 
 RUN python download_model.py || echo "Model will be downloaded on first request"
 
-CMD gunicorn emotion_api_server:app --bind 0.0.0.0:${PORT:-5050} --workers 2 --timeout 120
+CMD gunicorn emotion_api_server:app --bind 0.0.0.0:${PORT:-5050} --worker-class eventlet --workers 1 --timeout 120
