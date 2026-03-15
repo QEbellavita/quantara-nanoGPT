@@ -77,6 +77,12 @@ try:
 except ImportError:
     HAS_EXTERNAL_CONTEXT = False
 
+try:
+    from emotion_transition_engine import EmotionTransitionEngine
+    HAS_TRANSITION_ENGINE = True
+except ImportError:
+    HAS_TRANSITION_ENGINE = False
+
 
 # ─── 32-Emotion Taxonomy ────────────────────────────────────────────────────
 
@@ -797,6 +803,9 @@ def create_app(model: EmotionGPTModel) -> Flask:
     app = Flask(__name__)
     CORS(app)  # Enable CORS for frontend integration
 
+    # Emotion Transition Engine (graph-based pathfinding + adaptive weights)
+    transition_engine = EmotionTransitionEngine() if HAS_TRANSITION_ENGINE else None
+
     # External context provider (weather, nutrition, sentiment)
     context_provider = ExternalContextProvider() if HAS_EXTERNAL_CONTEXT else None
 
@@ -993,19 +1002,44 @@ def create_app(model: EmotionGPTModel) -> Flask:
 
     @app.route('/api/neural/emotion-transition', methods=['POST'])
     def emotion_transition():
-        """Get emotion transition pathway between two emotions"""
+        """Get emotion transition pathway between two emotions.
+
+        If to_emotion is provided AND transition engine is available,
+        returns a multi-step graph-based pathway. Otherwise, falls back
+        to legacy single-step TRANSITION_PATHWAYS lookup.
+        """
         try:
             data = request.json or {}
             from_emotion = data.get('from_emotion', '').lower()
-            to_emotion = data.get('to_emotion', '')
+            to_emotion = data.get('to_emotion', '').lower() if data.get('to_emotion') else ''
 
             if not from_emotion:
                 return jsonify({'error': 'from_emotion is required'}), 400
 
+            family = _EMOTION_TO_FAMILY.get(from_emotion, 'Neutral')
+
+            # Enhanced: multi-step pathway via graph engine
+            if to_emotion and transition_engine:
+                try:
+                    path = transition_engine.find_path(from_emotion, to_emotion)
+                    total_duration = sum(s.get('duration_min', 0) for s in path)
+                    return jsonify({
+                        'from_emotion': from_emotion,
+                        'from_family': family,
+                        'to_emotion': to_emotion,
+                        'pathway': path,
+                        'total_steps': len(path),
+                        'total_duration_min': total_duration,
+                        'mode': 'graph',
+                        'status': 'success'
+                    })
+                except ValueError as ve:
+                    return jsonify({'error': str(ve), 'status': 'error'}), 400
+
+            # Legacy: single-step lookup
             transition = TRANSITION_PATHWAYS.get(from_emotion, '')
             technique = THERAPY_TECHNIQUES.get(from_emotion, THERAPY_TECHNIQUES['neutral'])
             coaching = COACHING_PROMPTS.get(from_emotion, '')
-            family = _EMOTION_TO_FAMILY.get(from_emotion, 'Neutral')
 
             return jsonify({
                 'from_emotion': from_emotion,
@@ -1015,6 +1049,104 @@ def create_app(model: EmotionGPTModel) -> Flask:
                 'technique': technique['name'],
                 'exercise': technique['exercise'],
                 'coaching_prompt': coaching,
+                'mode': 'legacy',
+                'status': 'success'
+            })
+
+        except Exception as e:
+            return jsonify({'error': str(e), 'status': 'error'}), 500
+
+    @app.route('/api/neural/transition-session', methods=['POST'])
+    def transition_session():
+        """Manage transition sessions (start, advance, query).
+
+        Actions:
+          start   - Start a new session: {action: 'start', user_id, from_emotion, to_emotion}
+          advance - Advance session step: {action: 'advance', session_id, biometrics: {hr_delta, hrv_delta}}
+          query   - Get session state:   {action: 'query', session_id}
+        """
+        if not transition_engine:
+            return jsonify({'error': 'Transition engine not available', 'status': 'error'}), 503
+
+        try:
+            data = request.json or {}
+            action = data.get('action', '')
+
+            if action == 'start':
+                user_id = data.get('user_id', 'anonymous')
+                from_emotion = data.get('from_emotion', '').lower()
+                to_emotion = data.get('to_emotion', '').lower()
+                if not from_emotion or not to_emotion:
+                    return jsonify({'error': 'from_emotion and to_emotion are required'}), 400
+                session = transition_engine.start_session(user_id, from_emotion, to_emotion)
+                return jsonify({
+                    'session': session.to_dict(),
+                    'current_step': session.get_current_step(),
+                    'status': 'success'
+                })
+
+            elif action == 'advance':
+                session_id = data.get('session_id', '')
+                if not session_id:
+                    return jsonify({'error': 'session_id is required'}), 400
+                session = transition_engine.get_session(session_id)
+                if not session:
+                    return jsonify({'error': 'Session not found'}), 404
+                biometrics = data.get('biometrics', {})
+                bio_check = session.check_biometric_criteria(biometrics)
+                session.advance()
+                return jsonify({
+                    'session': session.to_dict(),
+                    'current_step': session.get_current_step(),
+                    'biometric_criteria_met': bio_check,
+                    'status': 'success'
+                })
+
+            elif action == 'query':
+                session_id = data.get('session_id', '')
+                if not session_id:
+                    return jsonify({'error': 'session_id is required'}), 400
+                session = transition_engine.get_session(session_id)
+                if not session:
+                    return jsonify({'error': 'Session not found'}), 404
+                return jsonify({
+                    'session': session.to_dict(),
+                    'current_step': session.get_current_step(),
+                    'status': 'success'
+                })
+
+            else:
+                return jsonify({'error': f"Unknown action: {action}. Use start, advance, or query"}), 400
+
+        except Exception as e:
+            return jsonify({'error': str(e), 'status': 'error'}), 500
+
+    @app.route('/api/neural/transition-feedback', methods=['POST'])
+    def transition_feedback():
+        """Log outcome feedback for a transition technique.
+
+        Body: {from_emotion, to_emotion, technique, success: bool}
+        """
+        if not transition_engine:
+            return jsonify({'error': 'Transition engine not available', 'status': 'error'}), 503
+
+        try:
+            data = request.json or {}
+            from_emotion = data.get('from_emotion', '').lower()
+            to_emotion = data.get('to_emotion', '').lower()
+            technique = data.get('technique', '')
+            success = data.get('success', True)
+
+            if not from_emotion or not to_emotion or not technique:
+                return jsonify({'error': 'from_emotion, to_emotion, and technique are required'}), 400
+
+            transition_engine.log_feedback(from_emotion, to_emotion, technique, success=bool(success))
+            return jsonify({
+                'logged': True,
+                'from_emotion': from_emotion,
+                'to_emotion': to_emotion,
+                'technique': technique,
+                'success': bool(success),
                 'status': 'success'
             })
 
