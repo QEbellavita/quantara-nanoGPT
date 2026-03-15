@@ -302,11 +302,13 @@ class AutoRetrainManager:
         model,
         checkpoint_path: str = 'checkpoints/ruview_calibration.pt',
         socketio=None,
+        profile_engine=None,
     ):
         self.buffer = calibration_buffer
         self.model = model
         self.checkpoint_path = checkpoint_path
         self.socketio = socketio
+        self.profile_engine = profile_engine
 
         self.threshold_monitor = ThresholdMonitor(first_threshold=20, subsequent_interval=50)
         self.drift_detector = DriftDetector(window_size=50)
@@ -373,6 +375,13 @@ class AutoRetrainManager:
         # Check drift trigger
         if self.drift_detector.is_drifting():
             logger.info("[AutoRetrain] Drift detected, triggering retrain")
+            if self.profile_engine:
+                try:
+                    self.profile_engine.log_event('default', 'biometric', 'model_drift_detected', {
+                        'drift_detected': True,
+                    }, 'nanogpt')
+                except Exception:
+                    pass
             self._do_retrain('drift')
             return
 

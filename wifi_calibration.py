@@ -312,7 +312,9 @@ class PersonalCalibrationBuffer:
         base_checkpoint: str = "checkpoints/wifi_calibration.pt",
         profile_id: str = None,
         calibration_dir: str = None,
+        profile_engine=None,
     ):
+        self.profile_engine = profile_engine
         self._profile_id = profile_id or os.environ.get("RUVIEW_PROFILE_ID", "default")
         self._calibration_dir = calibration_dir or os.environ.get(
             "RUVIEW_CALIBRATION_DIR", "calibration_profiles"
@@ -397,6 +399,19 @@ class PersonalCalibrationBuffer:
         target_t = torch.tensor([list(wearable_target)], dtype=torch.float32)
         self._buffer.append((wifi_t, target_t))
         self._total_added += 1
+
+        if self.profile_engine:
+            try:
+                heart_rate_value = wearable_target[0]  # hrv
+                hrv_value = wearable_target[0]
+                eda_value = wearable_target[1]
+                self.profile_engine.log_event(self._profile_id, 'biometric', 'hr_reading', {
+                    'hr': heart_rate_value,
+                    'hrv': hrv_value,
+                    'eda': eda_value,
+                }, 'nanogpt')
+            except Exception:
+                pass
 
         # Check if we should fine-tune
         should_finetune = False
