@@ -33,8 +33,9 @@ from torch.utils.data import Dataset, DataLoader
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from emotion_classifier import (
-    BiometricEncoder, FusionHead, EMOTION_FAMILIES, FAMILY_NAMES, family_for_emotion,
-    _EMOTION_TO_FAMILY,
+    BiometricEncoder, FusionHead, GoEmotionsEncoder,
+    EMOTION_FAMILIES, FAMILY_NAMES, family_for_emotion,
+    _EMOTION_TO_FAMILY, HAS_TRANSFORMERS,
 )
 from pose_encoder import PoseEncoder, POSE_FEATURE_NAMES
 
@@ -458,28 +459,80 @@ class EmotionDataset(Dataset):
         )
 
 
-def load_emotion_data(downloads_dir: Path):
+def load_dair_emotion_dataset(max_samples: int = 0):
+    """Load dair-ai/emotion dataset directly from HuggingFace Hub.
+
+    Returns list of (text, emotion) tuples using full 416K unsplit dataset.
+    Falls back to 20K split version if unsplit unavailable.
+
+    Connected to: ML Training & Prediction Systems
+    """
+    try:
+        from datasets import load_dataset
+    except ImportError:
+        print("  [!] HuggingFace datasets not installed. Run: pip install datasets")
+        return []
+
+    label_map = {0: 'sadness', 1: 'joy', 2: 'love', 3: 'anger', 4: 'fear', 5: 'surprise'}
+    data = []
+
+    try:
+        # Try unsplit config first (416K samples)
+        print("  Loading dair-ai/emotion (unsplit, ~416K samples) from HuggingFace...")
+        ds = load_dataset('dair-ai/emotion', 'unsplit', split='train')
+        source = "dair-ai/emotion (unsplit)"
+    except Exception:
+        try:
+            # Fall back to split config (20K samples)
+            print("  Loading dair-ai/emotion (split, ~20K samples) from HuggingFace...")
+            ds = load_dataset('dair-ai/emotion', 'split', split='train')
+            source = "dair-ai/emotion (split)"
+        except Exception as e:
+            print(f"  [!] Failed to load dair-ai/emotion: {e}")
+            return []
+
+    for row in ds:
+        text = str(row['text']).strip()
+        label = row['label']
+        emotion = label_map.get(label, 'neutral')
+        if text and len(text) > 10:
+            data.append((text, emotion))
+
+    if max_samples > 0 and len(data) > max_samples:
+        random.shuffle(data)
+        data = data[:max_samples]
+
+    print(f"  Loaded {len(data)} samples from {source}")
+    return data
+
+
+def load_emotion_data(downloads_dir: Path, use_hf_datasets: bool = False, hf_max_samples: int = 0):
     """Load emotion-labeled text data for all 32 emotions."""
     all_data = []
 
     # Original 7-emotion label map
     label_map = {0: 'sadness', 1: 'joy', 2: 'love', 3: 'anger', 4: 'fear', 5: 'surprise'}
 
-    # Try text.csv
-    text_path = downloads_dir / "text.csv"
-    if text_path.exists():
-        df = pd.read_csv(text_path, nrows=50000)
-        text_col = 'text' if 'text' in df.columns else df.columns[1]
-        label_col = 'label' if 'label' in df.columns else df.columns[2]
+    # Load from HuggingFace Hub if requested (replaces text.csv with full dataset)
+    if use_hf_datasets:
+        hf_data = load_dair_emotion_dataset(max_samples=hf_max_samples)
+        all_data.extend(hf_data)
+    else:
+        # Try local text.csv (legacy path)
+        text_path = downloads_dir / "text.csv"
+        if text_path.exists():
+            df = pd.read_csv(text_path, nrows=50000)
+            text_col = 'text' if 'text' in df.columns else df.columns[1]
+            label_col = 'label' if 'label' in df.columns else df.columns[2]
 
-        for _, row in df.iterrows():
-            text = str(row[text_col]).strip()
-            label = row[label_col]
-            emotion = label_map.get(label, 'neutral')
-            if text and len(text) > 10:
-                all_data.append((text, emotion))
+            for _, row in df.iterrows():
+                text = str(row[text_col]).strip()
+                label = row[label_col]
+                emotion = label_map.get(label, 'neutral')
+                if text and len(text) > 10:
+                    all_data.append((text, emotion))
 
-        print(f"  Loaded {len(all_data)} samples from text.csv")
+            print(f"  Loaded {len(all_data)} samples from text.csv")
 
     # Try archive training.csv
     archive_path = downloads_dir / "archive (4) 3" / "training.csv"
@@ -579,6 +632,27 @@ def _reclassify_for_training(data):
     return data + extra
 
 
+def extract_embeddings_go_emotions(encoder, texts, combined=True, batch_size=32):
+    """Extract embeddings using GoEmotions RoBERTa model.
+
+    Args:
+        encoder: GoEmotionsEncoder instance
+        texts: list of text strings
+        combined: if True, returns 796-dim (768 embedding + 28 emotion probs)
+                  if False, returns 768-dim embedding only
+        batch_size: batch size for encoding
+    """
+    dim_label = f"{encoder.combined_dim}-dim combined" if combined else f"{encoder.embedding_dim}-dim"
+    print(f"  Using GoEmotions RoBERTa ({dim_label})")
+
+    if combined:
+        embeddings = encoder.encode_with_emotions_batch(texts, batch_size=batch_size)
+    else:
+        embeddings = encoder.encode_batch(texts, batch_size=batch_size)
+
+    return embeddings.numpy()
+
+
 def extract_embeddings_sentence_transformer(model, texts, batch_size=64):
     """Extract embeddings using sentence-transformers (recommended)."""
     print(f"  Using sentence-transformers ({model.get_sentence_embedding_dimension()}-dim)")
@@ -634,13 +708,30 @@ def train(args):
 
     print(f"\n  Device: {device}")
 
-    # Choose embedding mode
+    # Choose embedding mode: GoEmotions > sentence-transformers > nanoGPT
+    use_go_emotions = args.use_go_emotions
     use_sentence_transformer = args.use_sentence_transformer
+    go_encoder = None
     sentence_model = None
     gpt = None
     encode_fn = None
+    go_combined = args.go_emotions_combined
 
-    if use_sentence_transformer:
+    if use_go_emotions:
+        if not HAS_TRANSFORMERS:
+            print("  [!] transformers not installed, falling back to sentence-transformers")
+            use_go_emotions = False
+        else:
+            print(f"\n  Loading GoEmotions ({args.go_emotions_model})...")
+            go_encoder = GoEmotionsEncoder(args.go_emotions_model, device=device)
+            if go_combined:
+                n_embd = go_encoder.combined_dim  # 796 = 768 + 28
+                print(f"  Combined dim: {n_embd} (768 embedding + 28 emotion probs)")
+            else:
+                n_embd = go_encoder.embedding_dim  # 768
+                print(f"  Embedding dim: {n_embd}")
+
+    if not use_go_emotions and use_sentence_transformer:
         if not HAS_SENTENCE_TRANSFORMERS:
             print("  [!] sentence-transformers not installed, falling back to nanoGPT")
             use_sentence_transformer = False
@@ -650,7 +741,7 @@ def train(args):
             n_embd = sentence_model.get_sentence_embedding_dimension()
             print(f"  Embedding dim: {n_embd}")
 
-    if not use_sentence_transformer:
+    if not use_go_emotions and not use_sentence_transformer:
         if not HAS_NANOGPT:
             raise RuntimeError("Neither sentence-transformers nor nanoGPT available")
 
@@ -689,7 +780,11 @@ def train(args):
 
     # Load emotion data
     print(f"\n  Loading emotion data from {args.data_dir}...")
-    data = load_emotion_data(Path(args.data_dir))
+    data = load_emotion_data(
+        Path(args.data_dir),
+        use_hf_datasets=args.use_hf_datasets,
+        hf_max_samples=args.hf_max_samples,
+    )
 
     # Load external data if provided
     if args.external_data:
@@ -730,7 +825,10 @@ def train(args):
     val_texts = [t for t, _ in val_data]
     val_emotions = [e for _, e in val_data]
 
-    if use_sentence_transformer:
+    if use_go_emotions:
+        train_embeddings = extract_embeddings_go_emotions(go_encoder, train_texts, combined=go_combined)
+        val_embeddings = extract_embeddings_go_emotions(go_encoder, val_texts, combined=go_combined)
+    elif use_sentence_transformer:
         train_embeddings = extract_embeddings_sentence_transformer(sentence_model, train_texts)
         val_embeddings = extract_embeddings_sentence_transformer(sentence_model, val_texts)
     else:
@@ -921,9 +1019,12 @@ def train(args):
                 },
                 'val_emotion_acc': val_emotion_acc,
                 'val_family_acc': val_family_acc,
-                'embedding_type': 'sentence-transformer' if use_sentence_transformer else 'nanogpt',
+                'embedding_type': 'go-emotions' if use_go_emotions else ('sentence-transformer' if use_sentence_transformer else 'nanogpt'),
             }
-            if use_sentence_transformer:
+            if use_go_emotions:
+                checkpoint_data['go_emotions_model'] = args.go_emotions_model
+                checkpoint_data['go_emotions_combined'] = go_combined
+            elif use_sentence_transformer:
                 checkpoint_data['sentence_model'] = args.sentence_model
             torch.save(checkpoint_data, 'checkpoints/emotion_fusion_head.pt')
             print(f"    -> Saved checkpoint (val_emotion={val_emotion_acc:.4f}, val_family={val_family_acc:.4f})")
@@ -941,13 +1042,26 @@ def train(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Train emotion classifier (32 emotions)')
-    # Embedding source
+    # Embedding source (priority: go-emotions > sentence-transformer > nanogpt)
+    parser.add_argument('--use-go-emotions', action='store_true',
+                        help='Use GoEmotions RoBERTa (best: pretrained emotion model, 768/796-dim)')
+    parser.add_argument('--go-emotions-model', default='SamLowe/roberta-base-go_emotions',
+                        help='GoEmotions model name on HuggingFace')
+    parser.add_argument('--go-emotions-combined', action='store_true', default=True,
+                        help='Use combined 796-dim (embedding + emotion probs) instead of 768-dim')
+    parser.add_argument('--no-go-emotions-combined', dest='go_emotions_combined', action='store_false',
+                        help='Use 768-dim embedding only (no emotion probability features)')
     parser.add_argument('--use-sentence-transformer', action='store_true',
-                        help='Use sentence-transformers (recommended for text-only accuracy)')
+                        help='Use sentence-transformers (384-dim, good fallback)')
     parser.add_argument('--sentence-model', default='all-MiniLM-L6-v2',
                         help='Sentence-transformer model name')
     parser.add_argument('--gpt-checkpoint', default='out-quantara-emotion-fast/ckpt.pt',
                         help='Path to nanoGPT checkpoint (if not using sentence-transformer)')
+    # Data sources
+    parser.add_argument('--use-hf-datasets', action='store_true',
+                        help='Load dair-ai/emotion from HuggingFace Hub (full 416K, replaces text.csv)')
+    parser.add_argument('--hf-max-samples', type=int, default=0,
+                        help='Max samples from HF dataset (0 = all)')
     # Data & training
     parser.add_argument('--data-dir', default=os.path.expanduser('~/Downloads'))
     parser.add_argument('--external-data', default=None,

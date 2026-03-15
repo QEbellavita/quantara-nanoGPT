@@ -30,6 +30,13 @@ try:
 except ImportError:
     HAS_SENTENCE_TRANSFORMERS = False
 
+# Optional: GoEmotions (RoBERTa-based emotion classifier)
+try:
+    from transformers import AutoTokenizer, AutoModelForSequenceClassification
+    HAS_TRANSFORMERS = True
+except ImportError:
+    HAS_TRANSFORMERS = False
+
 
 # ─── 32-Emotion Taxonomy ────────────────────────────────────────────────────
 
@@ -87,6 +94,226 @@ class SentenceEncoderWrapper:
         """Encode batch of texts."""
         embeddings = self.model.encode(texts, convert_to_tensor=True)
         return embeddings  # (batch, dim)
+
+
+class GoEmotionsEncoder:
+    """
+    Wrapper for SamLowe/roberta-base-go_emotions providing both:
+    1. Rich 768-dim RoBERTa text embeddings (hidden states)
+    2. 28-class emotion probability features (pretrained emotion knowledge)
+
+    Maps GoEmotions' 28 labels to Quantara's 32-emotion taxonomy for
+    knowledge transfer and soft-label distillation.
+
+    Connected to:
+    - Neural Workflow AI Engine
+    - ML Training & Prediction Systems
+    - Emotion-Aware Training Engine
+    """
+
+    # GoEmotions 28 labels → Quantara 32-emotion taxonomy mapping
+    GOEMOTIONS_TO_QUANTARA = {
+        'admiration': 'gratitude',
+        'amusement': 'fun',
+        'anger': 'anger',
+        'annoyance': 'frustration',
+        'approval': 'pride',
+        'caring': 'compassion',
+        'confusion': 'worry',
+        'curiosity': 'enthusiasm',
+        'desire': 'love',
+        'disappointment': 'sadness',
+        'disapproval': 'contempt',
+        'disgust': 'disgust',
+        'embarrassment': 'shame',
+        'excitement': 'excitement',
+        'fear': 'fear',
+        'gratitude': 'gratitude',
+        'grief': 'grief',
+        'joy': 'joy',
+        'love': 'love',
+        'nervousness': 'anxiety',
+        'optimism': 'hope',
+        'pride': 'pride',
+        'realization': 'surprise',
+        'relief': 'relief',
+        'remorse': 'guilt',
+        'sadness': 'sadness',
+        'surprise': 'surprise',
+        'neutral': 'neutral',
+    }
+
+    def __init__(self, model_name: str = 'SamLowe/roberta-base-go_emotions', device: str = 'cpu'):
+        if not HAS_TRANSFORMERS:
+            raise ImportError("transformers not installed. Run: pip install transformers")
+
+        self.device = device
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.model = AutoModelForSequenceClassification.from_pretrained(model_name)
+        self.model.to(device)
+        self.model.eval()
+
+        # RoBERTa hidden size = 768
+        self.embedding_dim = self.model.config.hidden_size
+        # GoEmotions label count = 28
+        self.num_go_labels = self.model.config.num_labels
+        # Combined: 768 (embedding) + 28 (emotion probs) = 796
+        self.combined_dim = self.embedding_dim + self.num_go_labels
+
+        # Build label index map
+        self.go_label_names = [
+            self.model.config.id2label[i] for i in range(self.num_go_labels)
+        ]
+
+        # Build Quantara emotion index for each GoEmotions label
+        self._go_to_quantara_idx = []
+        for go_label in self.go_label_names:
+            q_emotion = self.GOEMOTIONS_TO_QUANTARA.get(go_label, 'neutral')
+            if q_emotion in FusionHead.EMOTIONS:
+                self._go_to_quantara_idx.append(FusionHead.EMOTIONS.index(q_emotion))
+            else:
+                self._go_to_quantara_idx.append(FusionHead.EMOTIONS.index('neutral'))
+
+    def encode(self, text: str) -> torch.Tensor:
+        """Encode text to 768-dim RoBERTa embedding (CLS token hidden state)."""
+        inputs = self.tokenizer(text, return_tensors='pt', truncation=True, max_length=512)
+        inputs = {k: v.to(self.device) for k, v in inputs.items()}
+
+        with torch.no_grad():
+            outputs = self.model(**inputs, output_hidden_states=True)
+            # CLS token from last hidden layer
+            embedding = outputs.hidden_states[-1][:, 0, :]  # (1, 768)
+
+        return embedding
+
+    def encode_batch(self, texts: list, batch_size: int = 32) -> torch.Tensor:
+        """Encode batch of texts to embeddings."""
+        all_embeddings = []
+
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i:i + batch_size]
+            inputs = self.tokenizer(
+                batch, return_tensors='pt', truncation=True,
+                max_length=512, padding=True
+            )
+            inputs = {k: v.to(self.device) for k, v in inputs.items()}
+
+            with torch.no_grad():
+                outputs = self.model(**inputs, output_hidden_states=True)
+                embeddings = outputs.hidden_states[-1][:, 0, :]  # (B, 768)
+
+            all_embeddings.append(embeddings.cpu())
+
+        return torch.cat(all_embeddings, dim=0)
+
+    def predict_emotions(self, text: str) -> dict:
+        """Get GoEmotions predictions mapped to Quantara taxonomy.
+
+        Returns dict with:
+            - go_probs: raw 28-dim GoEmotions probabilities (tensor)
+            - quantara_scores: dict of {emotion: score} in 32-emotion space
+            - top_emotion: best matching Quantara emotion
+        """
+        inputs = self.tokenizer(text, return_tensors='pt', truncation=True, max_length=512)
+        inputs = {k: v.to(self.device) for k, v in inputs.items()}
+
+        with torch.no_grad():
+            outputs = self.model(**inputs)
+            probs = torch.sigmoid(outputs.logits).squeeze(0)  # (28,) multi-label
+
+        # Map to Quantara 32-emotion space
+        quantara_scores = {}
+        for i, go_label in enumerate(self.go_label_names):
+            q_emotion = self.GOEMOTIONS_TO_QUANTARA.get(go_label, 'neutral')
+            score = float(probs[i])
+            # Accumulate (some GoEmotions labels map to same Quantara emotion)
+            quantara_scores[q_emotion] = max(quantara_scores.get(q_emotion, 0.0), score)
+
+        top_emotion = max(quantara_scores, key=quantara_scores.get)
+
+        return {
+            'go_probs': probs,
+            'quantara_scores': quantara_scores,
+            'top_emotion': top_emotion,
+        }
+
+    def predict_emotions_batch(self, texts: list, batch_size: int = 32) -> torch.Tensor:
+        """Get GoEmotions probabilities for a batch. Returns (N, 28) tensor."""
+        all_probs = []
+
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i:i + batch_size]
+            inputs = self.tokenizer(
+                batch, return_tensors='pt', truncation=True,
+                max_length=512, padding=True
+            )
+            inputs = {k: v.to(self.device) for k, v in inputs.items()}
+
+            with torch.no_grad():
+                outputs = self.model(**inputs)
+                probs = torch.sigmoid(outputs.logits)  # (B, 28)
+
+            all_probs.append(probs.cpu())
+
+        return torch.cat(all_probs, dim=0)
+
+    def encode_with_emotions(self, text: str) -> torch.Tensor:
+        """Combined encoding: 768-dim embedding + 28-dim emotion probs = 796-dim.
+
+        This gives the fusion head both semantic features AND pretrained
+        emotion knowledge from GoEmotions.
+        """
+        inputs = self.tokenizer(text, return_tensors='pt', truncation=True, max_length=512)
+        inputs = {k: v.to(self.device) for k, v in inputs.items()}
+
+        with torch.no_grad():
+            outputs = self.model(**inputs, output_hidden_states=True)
+            embedding = outputs.hidden_states[-1][:, 0, :]  # (1, 768)
+            probs = torch.sigmoid(outputs.logits)  # (1, 28)
+
+        combined = torch.cat([embedding, probs], dim=-1)  # (1, 796)
+        return combined
+
+    def encode_with_emotions_batch(self, texts: list, batch_size: int = 32) -> torch.Tensor:
+        """Batch combined encoding. Returns (N, 796) tensor."""
+        all_combined = []
+
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i:i + batch_size]
+            inputs = self.tokenizer(
+                batch, return_tensors='pt', truncation=True,
+                max_length=512, padding=True
+            )
+            inputs = {k: v.to(self.device) for k, v in inputs.items()}
+
+            with torch.no_grad():
+                outputs = self.model(**inputs, output_hidden_states=True)
+                embeddings = outputs.hidden_states[-1][:, 0, :]
+                probs = torch.sigmoid(outputs.logits)
+
+            combined = torch.cat([embeddings, probs], dim=-1)
+            all_combined.append(combined.cpu())
+
+        return torch.cat(all_combined, dim=0)
+
+    def map_go_probs_to_quantara(self, go_probs: torch.Tensor) -> torch.Tensor:
+        """Map 28-dim GoEmotions probs to 32-dim Quantara space.
+
+        Takes max when multiple GoEmotions labels map to the same Quantara emotion.
+        Returns (batch, 32) tensor.
+        """
+        if go_probs.dim() == 1:
+            go_probs = go_probs.unsqueeze(0)
+
+        batch_size = go_probs.shape[0]
+        quantara_probs = torch.zeros(batch_size, 32)
+
+        for go_idx, q_idx in enumerate(self._go_to_quantara_idx):
+            quantara_probs[:, q_idx] = torch.max(
+                quantara_probs[:, q_idx], go_probs[:, go_idx]
+            )
+
+        return quantara_probs
 
 
 class BiometricEncoder(nn.Module):
@@ -619,14 +846,37 @@ class MultimodalEmotionAnalyzer:
         classifier_checkpoint: str = None,
         device: str = 'auto',
         use_sentence_transformer: bool = True,
-        sentence_model: str = 'all-MiniLM-L6-v2'
+        sentence_model: str = 'all-MiniLM-L6-v2',
+        use_go_emotions: bool = False,
+        go_emotions_model: str = 'SamLowe/roberta-base-go_emotions',
+        go_emotions_combined: bool = True,
     ):
         self.device = self._detect_device(device)
         self.use_sentence_transformer = use_sentence_transformer and HAS_SENTENCE_TRANSFORMERS
+        self.use_go_emotions = use_go_emotions and HAS_TRANSFORMERS
         self.sentence_encoder = None
+        self.go_emotions_encoder = None
 
-        # Try to use sentence-transformers for better text embeddings
-        if self.use_sentence_transformer:
+        # Priority: GoEmotions > sentence-transformers > nanoGPT
+        if self.use_go_emotions:
+            try:
+                print(f"[EmotionAnalyzer] Loading GoEmotions ({go_emotions_model})...")
+                self.go_emotions_encoder = GoEmotionsEncoder(go_emotions_model, device=self.device)
+                if go_emotions_combined:
+                    # 768 embedding + 28 emotion probs = 796-dim
+                    self.n_embd = self.go_emotions_encoder.combined_dim
+                    print(f"[EmotionAnalyzer] GoEmotions loaded: {self.n_embd}-dim combined (embedding+emotions)")
+                else:
+                    # 768-dim embedding only
+                    self.n_embd = self.go_emotions_encoder.embedding_dim
+                    print(f"[EmotionAnalyzer] GoEmotions loaded: {self.n_embd}-dim embeddings")
+                self._go_combined = go_emotions_combined
+            except Exception as e:
+                print(f"[EmotionAnalyzer] GoEmotions failed: {e}, falling back to sentence-transformers")
+                self.use_go_emotions = False
+
+        # Try sentence-transformers as fallback
+        if not self.use_go_emotions and self.use_sentence_transformer:
             try:
                 print(f"[EmotionAnalyzer] Loading sentence-transformers ({sentence_model})...")
                 self.sentence_encoder = SentenceEncoderWrapper(sentence_model, device=self.device)
@@ -636,8 +886,8 @@ class MultimodalEmotionAnalyzer:
                 print(f"[EmotionAnalyzer] Sentence encoder failed: {e}, falling back to nanoGPT")
                 self.use_sentence_transformer = False
 
-        # Fall back to nanoGPT if sentence-transformers not available
-        if not self.use_sentence_transformer:
+        # Fall back to nanoGPT if nothing else available
+        if not self.use_go_emotions and not self.use_sentence_transformer:
             if gpt_checkpoint and Path(gpt_checkpoint).exists():
                 self._load_gpt(gpt_checkpoint)
             else:
@@ -806,9 +1056,17 @@ class MultimodalEmotionAnalyzer:
             self.encode = lambda s: enc.encode(s, allowed_special={"<|endoftext|>"})
 
     def _get_text_embedding(self, text: str) -> torch.Tensor:
-        """Extract embedding from text using sentence-transformers or nanoGPT."""
+        """Extract embedding from text using GoEmotions, sentence-transformers, or nanoGPT."""
         if not text:
             text = " "  # Avoid empty tensor
+
+        # Use GoEmotions (best: pretrained emotion model + 768-dim RoBERTa)
+        if self.use_go_emotions and self.go_emotions_encoder:
+            if self._go_combined:
+                embedding = self.go_emotions_encoder.encode_with_emotions(text)
+            else:
+                embedding = self.go_emotions_encoder.encode(text)
+            return embedding.to(self.device)
 
         # Use sentence-transformers if available (much better for emotion)
         if self.use_sentence_transformer and self.sentence_encoder:

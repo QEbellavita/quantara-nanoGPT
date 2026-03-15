@@ -1,0 +1,275 @@
+text,emotion,hr,hrv,eda
+Wearable sensor data indicates improving low-activity stress pattern at high severity over 31 days,boredom,61.3,64.8,0.59
+Biometric analysis shows stress anomaly over 28 days. Severity: high. Trend: stable,anxiety,82.3,20.0,6.41
+"Biometric snapshot — heart rate 95, blood pressure 145/92, classified as Abnormal, sleep quality: Poor",stressed,95.5,82.1,7.03
+"Recovery plan initiated for wearable-detected anomaly, emotional state: mindfulness",mindfulness,58.1,73.7,0.7
+"Time-series health data: Normal reading, HR 76, BP 122/82, activity: Active, sleep quality: Fair",calm,74.6,88.0,1.5
+"Biometric snapshot — heart rate 93, blood pressure 133/89, classified as Abnormal, sleep quality: Fair",worry,92.4,99.7,5.61
+"Biometric snapshot — heart rate 71, blood pressure 119/78, classified as Normal, sleep quality: Excellent",neutral,70.6,94.8,1.93
+"Biometric snapshot — heart rate 70, blood pressure 115/75, classified as Normal, sleep quality: Excellent",calm,69.4,92.8,0.85
+"Time-series health data: Normal reading, HR 69, BP 113/74, activity: Sedentary, sleep quality: Good",neutral,68.7,93.7,1.84
+"Health monitor: Abnormal status with HR=88 bpm, BP=125/82, activity: Active",stressed,87.0,94.2,6.26
+Wearable data informs intervention: addressing physiological indicators of relief,relief,71.7,73.2,3.77
+"Physiological monitoring: stress anomaly detected, high severity, stable over time",overwhelmed,100.3,30.0,10.92
+"Health monitor: Abnormal status with HR=115 bpm, BP=185/115, activity: Inactive",fear,115.3,53.2,6.51
+"Health monitor: Normal status with HR=90 bpm, BP=128/85, activity: Active",neutral,88.1,91.1,3.0
+"Recovery plan initiated for wearable-detected anomaly, emotional state: resilience",resilience,72.3,82.1,2.86
+Wearable sensor data indicates worsening stress anomaly at high severity over 31 days,anxiety,78.2,34.2,5.34
+"Biometric snapshot — heart rate 68, blood pressure 110/70, classified as Normal, sleep quality: Excellent",neutral,67.7,97.0,2.08
+Biometric analysis shows stress anomaly over 5 days. Severity: high. Trend: worsening,anxiety,76.8,38.9,8.95
+Continuous wearable data reveals high stress anomaly that is improving over 5 days,stressed,96.0,31.9,5.09
+"Time-series health data: Normal reading, HR 73, BP 110/70, activity: High, sleep quality: Fair",neutral,72.0,97.0,1.0
+Wearable data informs intervention: addressing physiological indicators of resilience,resilience,66.8,68.0,1.38
+Health intervention plan addressing 压力: patient shows signs of mindfulness,mindfulness,58.4,73.1,0.87
+"Health monitor: Abnormal status with HR=77 bpm, BP=125/85, activity: Active",worry,75.4,96.9,4.08
+"Biometric snapshot — heart rate 108, blood pressure 140/92, classified as Abnormal, sleep quality: Fair",worry,107.3,93.0,5.41
+"Wearable reading: HR 117 bpm, BP 165/102, sleep quality: None, activity: Moderate. Status: Abnormal",fear,118.6,68.9,8.65
+"Wearable reading: HR 60 bpm, BP 90/60, sleep quality: Excellent, activity: Active. Status: Oxygen Saturation",calm,58.4,99.5,1.31
+Health intervention plan addressing 压力: patient shows signs of anxiety,anxiety,75.2,26.0,5.84
+Biometric analysis shows low-activity stress pattern over 14 days. Severity: high. Trend: stable,anxiety,96.6,25.5,8.16
+"Recovery plan initiated for wearable-detected anomaly, emotional state: hope",hope,67.9,69.8,1.91
+"Physiological monitoring: stress anomaly detected, high severity, stable over time",stressed,93.2,26.2,5.88
+Continuous wearable data reveals high stress anomaly that is stable over 5 days,worry,88.5,45.8,4.88
+"Recovery plan initiated for wearable-detected anomaly, emotional state: resilience",resilience,65.7,77.6,2.0
+Biometric analysis shows stress anomaly over 5 days. Severity: high. Trend: stable,neutral,61.4,53.3,1.62
+Time-series analysis: high-level stress anomaly over 5 days with stable trend,neutral,61.4,67.2,1.08
+"Health anomaly report: stress anomaly with high severity, stable trajectory over 27 days",overwhelmed,89.4,30.5,9.47
+"Recovery plan initiated for wearable-detected anomaly, emotional state: hope",hope,72.1,67.4,2.91
+"Patient biometrics show Normal: heart rate 73 bpm, blood pressure 117/76, sleep quality: Excellent",excitement,71.7,94.2,4.53
+"Biometric snapshot — heart rate 71, blood pressure 114/74, classified as Normal, sleep quality: Excellent",neutral,69.4,100.1,2.72
+Continuous wearable data reveals high low-activity stress pattern that is improving over 24 days,sadness,59.6,51.6,1.47
+Time-series analysis: high-level stress anomaly over 15 days with stable trend,neutral,74.9,53.5,1.26
+Wearable sensor data indicates stable stress anomaly at high severity over 5 days,overwhelmed,90.8,30.5,7.22
+Continuous wearable data reveals high stress anomaly that is stable over 5 days,overwhelmed,107.6,22.0,10.64
+Biometric analysis shows low-activity stress pattern over 15 days. Severity: high. Trend: stable,anxiety,90.7,38.1,7.59
+"Personalized health plan based on biometric data, patient transitioning toward calm",calm,61.6,76.7,0.96
+"Health anomaly report: stress anomaly with high severity, stable trajectory over 5 days",stressed,86.8,33.2,6.94
+"Patient biometrics show Abnormal: heart rate 75 bpm, blood pressure 90/60, sleep quality: Fair",stressed,74.9,91.9,5.38
+"Recovery plan initiated for wearable-detected anomaly, emotional state: calm",calm,64.4,71.6,0.62
+"Time-series health data: Normal reading, HR 69, BP 114/72, activity: Active, sleep quality: Excellent",calm,70.4,98.3,0.68
+Wearable sensor data indicates stable stress anomaly at high severity over 5 days,overwhelmed,96.6,26.1,10.96
+"Patient biometrics show Abnormal: heart rate 97 bpm, blood pressure 134/88, sleep quality: Poor",stressed,98.5,89.8,8.8
+Continuous wearable data reveals high stress anomaly that is stable over 5 days,fear,94.7,41.3,6.93
+Biometric analysis shows persistent anomaly over 28 days. Severity: high. Trend: stable,stressed,101.8,21.0,6.92
+Health intervention plan addressing 压力: patient shows signs of resilience,resilience,64.8,62.5,2.43
+Wearable data informs intervention: addressing physiological indicators of hope,hope,66.1,67.6,1.58
+"Biometric snapshot — heart rate 75, blood pressure 119/78, classified as Normal, sleep quality: Excellent",mindfulness,73.9,89.2,0.58
+"Patient shows stress anomaly pattern at high level, currently improving over 5 days",overwhelmed,109.5,31.7,8.48
+"Health monitor: Abnormal status with HR=99 bpm, BP=145/90, activity: Active",excitement,100.5,79.6,5.43
+Wearable sensor data indicates stable stress anomaly at high severity over 5 days,overwhelmed,92.2,23.1,11.83
+Wearable data informs intervention: addressing physiological indicators of relief,relief,61.8,61.3,2.23
+"Personalized health plan based on biometric data, patient transitioning toward relief",relief,60.7,71.2,2.57
+Biometric analysis shows stress anomaly over 5 days. Severity: high. Trend: stable,overwhelmed,89.1,31.6,10.86
+Wearable data informs intervention: addressing physiological indicators of relief,relief,68.5,57.7,3.42
+Health intervention plan addressing 压力: patient shows signs of calm,calm,55.4,80.8,1.7
+Wearable data informs intervention: addressing physiological indicators of worry,worry,78.2,36.8,4.79
+"Patient shows stress anomaly pattern at high level, currently stable over 5 days",stressed,82.1,25.0,7.23
+"Time-series health data: Normal reading, HR 72, BP 116/75, activity: Active, sleep quality: Excellent",neutral,71.8,100.3,2.34
+"Health monitor: Elevated BP status with HR=115 bpm, BP=175/115, activity: Active",anxiety,115.9,62.6,6.73
+Wearable data informs intervention: addressing physiological indicators of resilience,resilience,60.5,69.1,1.26
+"Biometric snapshot — heart rate 74, blood pressure 118/79, classified as Normal, sleep quality: Fair",calm,73.2,99.2,1.91
+Health intervention plan addressing 压力: patient shows signs of mindfulness,mindfulness,62.6,84.0,0.83
+Wearable sensor data indicates worsening stress anomaly at high severity over 31 days,stressed,93.2,34.9,6.9
+"Biometric snapshot — heart rate 88, blood pressure 120/80, classified as Normal, sleep quality: Fair",calm,88.9,91.4,1.96
+"Biometric snapshot — heart rate 110, blood pressure 180/110, classified as Abnormal, sleep quality: Poor",stressed,111.7,52.1,7.87
+Wearable data informs intervention: addressing physiological indicators of calm,calm,56.8,66.1,0.56
+Wearable sensor data indicates stable low-activity stress pattern at high severity over 27 days,boredom,58.1,67.4,1.11
+"Patient biometrics show Normal: heart rate 70 bpm, blood pressure 113/73, sleep quality: Good",calm,70.0,93.8,1.04
+"Patient biometrics show Abnormal: heart rate 60 bpm, blood pressure 90/60, sleep quality: Poor",fear,60.7,93.2,9.6
+"Patient shows stress anomaly pattern at high level, currently stable over 31 days",overwhelmed,96.5,34.3,7.3
+Time-series analysis: high-level stress anomaly over 5 days with stable trend,stressed,93.6,39.6,6.43
+Health intervention plan addressing 压力: patient shows signs of relief,relief,77.7,58.9,3.51
+Health intervention plan addressing 低活动压力: patient shows signs of calm,calm,61.7,82.4,1.86
+Health intervention plan addressing 压力: patient shows signs of calm,calm,56.4,78.3,1.06
+"Patient biometrics show Normal: heart rate 72 bpm, blood pressure 116/77, sleep quality: Good",neutral,72.9,98.7,2.32
+"Patient shows stress anomaly pattern at high level, currently stable over 5 days",overwhelmed,98.8,26.0,7.47
+Biometric analysis shows stress anomaly over 5 days. Severity: high. Trend: stable,anxiety,78.4,25.7,8.32
+"Wearable reading: HR 70 bpm, BP 112/72, sleep quality: Good, activity: Sedentary. Status: Normal",neutral,69.2,95.6,2.5
+"Recovery plan initiated for wearable-detected anomaly, emotional state: relief",relief,63.4,57.0,3.74
+"Recovery plan initiated for wearable-detected anomaly, emotional state: calm",calm,61.5,87.2,1.12
+"Health anomaly report: stress anomaly with high severity, stable trajectory over 5 days",anxiety,94.3,34.7,6.33
+"Time-series health data: Normal reading, HR 79, BP 122/81, activity: Moderate, sleep quality: Good",calm,79.0,98.0,0.74
+"Personalized health plan based on biometric data, patient transitioning toward resilience",resilience,64.8,62.6,1.32
+"Time-series health data: Abnormal reading, HR 120, BP 170/105, activity: Highly Active, sleep quality: None",stressed,121.6,69.2,7.88
+"Health anomaly report: low-activity stress pattern with high severity, stable trajectory over 28 days",calm,56.5,87.2,0.7
+"Health monitor: Normal status with HR=73 bpm, BP=115/77, activity: Active",calm,74.1,90.6,1.73
+"Wearable reading: HR 113 bpm, BP 170/100, sleep quality: Very Poor, activity: Inactive. Status: Abnormal",sadness,112.0,62.9,1.61
+"Wearable reading: HR 60 bpm, BP 80/50, sleep quality: Very Poor, activity: Active. Status: Abnormal",anxiety,60.7,97.2,6.32
+"Time-series health data: Abnormal reading, HR 110, BP 150/95, activity: Sedentary, sleep quality: Very Poor",fear,109.8,76.1,9.7
+Continuous wearable data reveals high persistent anomaly that is stable over 28 days,overwhelmed,88.9,24.6,11.24
+"Wearable reading: HR 82 bpm, BP 122/83, sleep quality: Good, activity: Active. Status: Normal",calm,80.1,92.5,1.26
+"Health monitor: Abnormal status with HR=95 bpm, BP=140/100, activity: High",worry,93.2,87.5,3.09
+"Recovery plan initiated for wearable-detected anomaly, emotional state: calm",calm,66.4,76.7,1.42
+"Personalized health plan based on biometric data, patient transitioning toward relief",relief,70.6,77.8,3.66
+Time-series analysis: high-level stress anomaly over 7 days with worsening trend,overwhelmed,104.9,21.8,11.4
+Continuous wearable data reveals high stress anomaly that is stable over 5 days,anxiety,91.2,32.7,6.86
+Biometric analysis shows stress anomaly over 5 days. Severity: high. Trend: stable,stressed,94.2,28.0,5.57
+"Recovery plan initiated for wearable-detected anomaly, emotional state: resilience",resilience,74.3,68.5,2.53
+"Recovery plan initiated for wearable-detected anomaly, emotional state: mindfulness",mindfulness,64.4,71.1,0.86
+Wearable sensor data indicates improving stress anomaly at high severity over 5 days,overwhelmed,87.5,29.0,11.26
+"Personalized health plan based on biometric data, patient transitioning toward resilience",resilience,63.2,72.8,1.69
+Biometric analysis shows stress anomaly over 5 days. Severity: high. Trend: stable,stressed,83.9,25.9,8.15
+"Biometric snapshot — heart rate 80, blood pressure 121/81, classified as Normal, sleep quality: Fair",mindfulness,81.2,91.3,0.84
+"Time-series health data: Prehypertension reading, HR 100, BP 170/100, activity: Sedentary, sleep quality: Poor",worry,101.2,62.4,4.39
+"Patient shows stress anomaly pattern at high level, currently improving over 5 days",relief,71.7,75.6,3.88
+"Physiological monitoring: stress anomaly detected, high severity, improving over time",worry,82.6,46.2,3.19
+"Recovery plan initiated for wearable-detected anomaly, emotional state: hope",hope,72.1,68.0,2.87
+"Time-series health data: Abnormal reading, HR 112, BP 160/100, activity: Highly Active, sleep quality: None",anxiety,111.2,75.3,8.23
+"Wearable reading: HR 67 bpm, BP 113/73, sleep quality: Excellent, activity: Active. Status: Normal",neutral,67.3,89.9,2.46
+"Patient biometrics show Normal: heart rate 74 bpm, blood pressure 118/77, sleep quality: Excellent",relief,72.5,99.0,3.01
+Health intervention plan addressing 压力: patient shows signs of hope,hope,77.9,66.5,2.36
+Wearable data informs intervention: addressing physiological indicators of mindfulness,mindfulness,63.9,92.1,1.14
+Wearable data informs intervention: addressing physiological indicators of calm,calm,61.7,65.4,0.94
+"Patient shows stress anomaly pattern at high level, currently stable over 24 days",stressed,87.2,22.4,6.99
+"Wearable monitoring detected high-severity stress anomaly over 24 days, trend is stable",stressed,87.3,27.5,5.58
+Biometric analysis shows stress anomaly over 5 days. Severity: high. Trend: stable,stressed,86.8,38.1,5.59
+"Patient biometrics show Normal: heart rate 72 bpm, blood pressure 115/75, sleep quality: Excellent",relief,72.9,98.3,3.95
+"Recovery plan initiated for wearable-detected anomaly, emotional state: resilience",resilience,65.0,74.6,1.28
+"Recovery plan initiated for wearable-detected anomaly, emotional state: worry",worry,82.1,37.0,4.91
+"Health monitor: Abnormal status with HR=98 bpm, BP=150/95, activity: Moderate",stressed,96.4,79.1,8.94
+"Recovery plan initiated for wearable-detected anomaly, emotional state: mindfulness",mindfulness,67.9,89.7,0.71
+"Health monitor: Abnormal status with HR=76 bpm, BP=118/79, activity: Sedentary",stressed,76.8,96.7,6.8
+"Patient shows stress anomaly pattern at high level, currently improving over 5 days",joy,83.9,53.8,3.74
+"Personalized health plan based on biometric data, patient transitioning toward hope",hope,74.3,65.0,2.16
+"Wearable monitoring detected high-severity stress anomaly over 5 days, trend is stable",stressed,105.0,33.4,6.08
+"Time-series health data: Abnormal reading, HR 102, BP 130/85, activity: Sedentary, sleep quality: Poor",worry,103.2,94.9,3.57
+"Health anomaly report: stress anomaly with high severity, stable trajectory over 5 days",overwhelmed,101.2,23.5,8.81
+"Personalized health plan based on biometric data, patient transitioning toward relief",relief,66.8,72.3,3.3
+"Personalized health plan based on biometric data, patient transitioning toward calm",calm,60.7,79.9,0.94
+"Time-series health data: Normal reading, HR 74, BP 120/79, activity: Active, sleep quality: Fair",excitement,74.3,92.9,4.25
+"Biometric snapshot — heart rate 72, blood pressure 115/78, classified as Normal, sleep quality: Good",calm,73.7,93.6,1.41
+"Recovery plan initiated for wearable-detected anomaly, emotional state: anxiety",anxiety,86.4,22.9,5.76
+"Wearable reading: HR 85 bpm, BP 125/82, sleep quality: Fair, activity: Active. Status: Normal",relief,85.5,90.6,2.98
+"Biometric snapshot — heart rate 105, blood pressure 150/95, classified as Abnormal, sleep quality: None",worry,105.5,80.2,4.08
+"Physiological monitoring: stress anomaly detected, high severity, stable over time",worry,80.5,42.2,4.09
+"Patient shows stress anomaly pattern at high level, currently stable over 5 days",worry,80.0,39.9,3.24
+"Time-series health data: Normal reading, HR 72, BP 113/73, activity: High, sleep quality: Good",calm,71.2,92.1,1.89
+"Personalized health plan based on biometric data, patient transitioning toward relief",relief,76.3,71.8,3.66
+"Biometric snapshot — heart rate 65, blood pressure 108/68, classified as Normal, sleep quality: Excellent",enthusiasm,66.4,97.3,3.97
+"Health anomaly report: low-activity stress pattern with high severity, worsening trajectory over 7 days",worry,75.6,39.0,5.25
+"Wearable reading: HR 105 bpm, BP 155/98, sleep quality: Fair, activity: Moderate. Status: Abnormal",stressed,106.1,74.1,8.94
+"Health anomaly report: stress anomaly with high severity, stable trajectory over 5 days",stressed,82.3,21.9,7.96
+"Health monitor: Abnormal status with HR=88 bpm, BP=128/88, activity: Moderate",worry,89.9,93.4,4.63
+"Patient biometrics show Abnormal: heart rate 90 bpm, blood pressure 135/88, sleep quality: Poor",fear,89.8,97.0,8.3
+Wearable sensor data indicates stable stress anomaly at high severity over 5 days,fear,90.4,26.9,7.71
+"Patient shows stress anomaly pattern at high level, currently stable over 5 days",stressed,93.7,38.6,6.75
+Wearable data informs intervention: addressing physiological indicators of resilience,resilience,70.4,71.4,1.6
+Time-series analysis: high-level low-activity stress pattern over 28 days with stable trend,neutral,73.6,61.4,1.88
+"Patient biometrics show Abnormal: heart rate 100 bpm, blood pressure 135/95, sleep quality: Fair",stressed,99.1,93.2,5.45
+"Recovery plan initiated for wearable-detected anomaly, emotional state: relief",relief,73.3,57.1,3.95
+"Personalized health plan based on biometric data, patient transitioning toward resilience",resilience,60.2,73.4,1.55
+"Time-series health data: Abnormal reading, HR 108, BP 144/99, activity: Active, sleep quality: Fair",stressed,108.9,86.9,6.08
+"Health monitor: Normal status with HR=75 bpm, BP=118/79, activity: Moderate",calm,74.3,94.1,1.95
+Wearable data informs intervention: addressing physiological indicators of hope,hope,76.0,67.1,1.54
+"Health monitor: Abnormal status with HR=90 bpm, BP=130/90, activity: High",stressed,89.8,95.8,5.65
+Wearable sensor data indicates stable stress anomaly at high severity over 5 days,anxiety,87.2,35.2,7.76
+Continuous wearable data reveals high stress anomaly that is stable over 5 days,neutral,68.7,58.0,1.16
+"Physiological monitoring: stress anomaly detected, high severity, stable over time",worry,75.8,48.9,5.44
+"Personalized health plan based on biometric data, patient transitioning toward anxiety",anxiety,93.7,27.1,5.27
+Wearable sensor data indicates improving low-activity stress pattern at high severity over 28 days,stressed,96.0,32.5,5.25
+Time-series analysis: high-level stress anomaly over 5 days with stable trend,neutral,78.7,60.3,2.98
+"Patient biometrics show Abnormal: heart rate 110 bpm, blood pressure 155/98, sleep quality: None",fear,108.7,77.0,7.56
+Time-series analysis: high-level stress anomaly over 31 days with stable trend,fear,81.6,26.9,8.71
+"Physiological monitoring: stress anomaly detected, high severity, stable over time",calm,56.6,74.5,1.04
+Health intervention plan addressing 压力: patient shows signs of mindfulness,mindfulness,61.6,74.3,0.75
+Time-series analysis: high-level stress anomaly over 27 days with stable trend,calm,68.0,80.7,0.73
+"Biometric snapshot — heart rate 82, blood pressure 130/85, classified as Abnormal, sleep quality: Good",worry,83.8,87.9,3.09
+"Health monitor: Abnormal status with HR=130 bpm, BP=170/110, activity: Inactive",worry,129.1,60.3,5.31
+"Physiological monitoring: stress anomaly detected, high severity, worsening over time",anxiety,99.2,25.9,8.48
+"Biometric snapshot — heart rate 71, blood pressure 111/71, classified as Normal, sleep quality: Fair",neutral,72.9,96.6,1.72
+"Wearable monitoring detected high-severity stress anomaly over 5 days, trend is stable",stressed,102.8,34.9,8.33
+"Physiological monitoring: stress anomaly detected, high severity, stable over time",overwhelmed,106.6,23.9,9.42
+"Patient biometrics show Prehypertension: heart rate 85 bpm, blood pressure 160/100, sleep quality: Fair",frustration,85.0,74.6,5.46
+Wearable sensor data indicates stable stress anomaly at high severity over 5 days,worry,80.0,34.7,5.98
+"Patient shows stress anomaly pattern at high level, currently stable over 5 days",worry,80.2,35.5,5.5
+"Personalized health plan based on biometric data, patient transitioning toward worry",worry,74.4,45.6,3.23
+Health intervention plan addressing 持续异常: patient shows signs of resilience,resilience,70.7,72.9,1.25
+"Recovery plan initiated for wearable-detected anomaly, emotional state: calm",calm,61.4,78.6,1.47
+"Biometric snapshot — heart rate 110, blood pressure 145/105, classified as Abnormal, sleep quality: Poor",anxiety,111.0,85.8,6.13
+"Patient biometrics show Normal: heart rate 75 bpm, blood pressure 119/78, sleep quality: Fair",neutral,74.8,97.0,2.72
+"Recovery plan initiated for wearable-detected anomaly, emotional state: calm",calm,61.7,88.8,1.78
+Health intervention plan addressing 压力: patient shows signs of anxiety,anxiety,86.5,22.3,8.33
+"Wearable reading: HR 71 bpm, BP 119/76, sleep quality: Excellent, activity: Active. Status: Normal",calm,71.2,99.3,1.3
+"Patient biometrics show Normal: heart rate 75 bpm, blood pressure 114/76, sleep quality: Excellent",mindfulness,73.8,89.4,0.74
+Wearable data informs intervention: addressing physiological indicators of calm,calm,60.8,81.6,1.73
+"Health anomaly report: stress anomaly with high severity, stable trajectory over 5 days",worry,76.4,33.0,3.38
+"Biometric snapshot — heart rate 70, blood pressure 116/75, classified as Normal, sleep quality: Good",calm,70.8,94.8,0.67
+"Wearable reading: HR 73 bpm, BP 116/77, sleep quality: Good, activity: Active. Status: Normal",mindfulness,73.5,97.8,1.05
+Wearable data informs intervention: addressing physiological indicators of calm,calm,56.7,72.2,0.95
+"Personalized health plan based on biometric data, patient transitioning toward resilience",resilience,72.3,67.1,1.6
+Health intervention plan addressing 压力: patient shows signs of relief,relief,73.2,76.9,3.24
+"Time-series health data: Abnormal reading, HR 95, BP 145/90, activity: Active, sleep quality: None",worry,95.7,81.2,4.15
+"Time-series health data: Normal reading, HR 74, BP 117/77, activity: Sedentary, sleep quality: Good",calm,74.7,90.7,0.7
+"Personalized health plan based on biometric data, patient transitioning toward calm",calm,63.3,77.9,0.79
+"Personalized health plan based on biometric data, patient transitioning toward resilience",resilience,61.7,67.0,1.45
+Health intervention plan addressing 压力: patient shows signs of relief,relief,72.3,60.9,3.37
+Wearable data informs intervention: addressing physiological indicators of worry,worry,88.2,41.4,3.56
+Wearable data informs intervention: addressing physiological indicators of relief,relief,66.7,67.4,2.65
+"Patient biometrics show Abnormal: heart rate 98 bpm, blood pressure 140/90, sleep quality: Fair",worry,97.5,82.4,3.64
+Health intervention plan addressing 压力: patient shows signs of worry,worry,89.4,42.0,4.05
+Health intervention plan addressing 压力: patient shows signs of resilience,resilience,73.1,71.0,2.05
+Wearable data informs intervention: addressing physiological indicators of mindfulness,mindfulness,62.8,70.4,1.02
+"Physiological monitoring: stress anomaly detected, high severity, stable over time",overwhelmed,100.4,33.8,8.4
+"Wearable reading: HR 68 bpm, BP 117/78, sleep quality: Good, activity: Moderate. Status: Normal",neutral,69.5,91.4,2.31
+"Wearable monitoring detected high-severity stress anomaly over 5 days, trend is stable",fear,96.4,35.9,7.65
+"Patient biometrics show Abnormal: heart rate 105 bpm, blood pressure 142/96, sleep quality: Poor",anxiety,106.1,84.1,6.29
+Wearable data informs intervention: addressing physiological indicators of relief,relief,79.9,68.8,2.7
+Wearable data informs intervention: addressing physiological indicators of mindfulness,mindfulness,55.5,75.0,1.29
+"Biometric snapshot — heart rate 98, blood pressure 145/95, classified as Elevated BP, sleep quality: Poor",sadness,96.5,85.3,1.95
+"Wearable reading: HR 74 bpm, BP 115/75, sleep quality: Good, activity: Active. Status: Normal",relief,74.6,89.5,3.5
+Biometric analysis shows stress anomaly over 5 days. Severity: high. Trend: stable,worry,77.4,44.4,5.33
+Health intervention plan addressing 压力: patient shows signs of mindfulness,mindfulness,60.9,75.5,1.12
+"Recovery plan initiated for wearable-detected anomaly, emotional state: resilience",resilience,74.5,83.7,2.65
+Wearable data informs intervention: addressing physiological indicators of hope,hope,74.5,70.9,2.39
+Wearable sensor data indicates stable stress anomaly at high severity over 5 days,neutral,79.1,62.5,2.77
+"Recovery plan initiated for wearable-detected anomaly, emotional state: resilience",resilience,68.8,60.4,1.53
+"Patient shows stress anomaly pattern at high level, currently stable over 24 days",worry,75.0,32.4,3.58
+Health intervention plan addressing 压力: patient shows signs of relief,relief,71.5,66.7,2.88
+Wearable data informs intervention: addressing physiological indicators of calm,calm,58.8,65.2,1.71
+"Time-series health data: Normal reading, HR 81, BP 123/80, activity: Sedentary, sleep quality: Good",neutral,80.1,89.4,1.64
+Health intervention plan addressing 压力: patient shows signs of mindfulness,mindfulness,63.4,94.4,0.59
+"Recovery plan initiated for wearable-detected anomaly, emotional state: resilience",resilience,71.6,69.5,2.82
+"Wearable monitoring detected high-severity stress anomaly over 5 days, trend is stable",stressed,89.8,29.4,7.54
+Wearable sensor data indicates improving stress anomaly at high severity over 5 days,hope,79.5,71.1,2.05
+"Biometric snapshot — heart rate 140, blood pressure 200/120, classified as Hypertension Crisis, sleep quality: Poor",stressed,139.6,45.9,5.3
+Biometric analysis shows stress anomaly over 5 days. Severity: high. Trend: stable,overwhelmed,108.9,24.0,11.05
+"Patient biometrics show Abnormal: heart rate 55 bpm, blood pressure 85/55, sleep quality: None",anxiety,55.2,95.1,7.66
+"Biometric snapshot — heart rate 58, blood pressure 85/55, classified as Low BP, sleep quality: Fair",worry,58.2,95.8,5.92
+"Biometric snapshot — heart rate 72, blood pressure 115/75, classified as Normal, sleep quality: Excellent",mindfulness,71.8,88.7,0.88
+"Personalized health plan based on biometric data, patient transitioning toward resilience",resilience,60.3,80.8,1.79
+Continuous wearable data reveals high low-activity stress pattern that is stable over 24 days,boredom,62.5,63.7,0.6
+"Personalized health plan based on biometric data, patient transitioning toward hope",hope,75.5,61.2,2.01
+Biometric analysis shows stress anomaly over 5 days. Severity: high. Trend: stable,worry,78.2,43.1,3.46
+"Biometric snapshot — heart rate 77, blood pressure 116/76, classified as Normal, sleep quality: Fair",neutral,76.9,94.5,2.59
+"Time-series health data: Normal reading, HR 78, BP 120/80, activity: Moderate, sleep quality: Good",relief,77.1,88.6,3.47
+"Biometric snapshot — heart rate 118, blood pressure 155/98, classified as Abnormal, sleep quality: Poor",fear,118.7,74.6,6.37
+"Wearable reading: HR 70 bpm, BP 113/73, sleep quality: Excellent, activity: Active. Status: Normal",calm,70.0,97.5,0.57
+"Wearable monitoring detected high-severity stress anomaly over 5 days, trend is stable",stressed,86.3,37.2,5.46
+"Patient biometrics show Normal: heart rate 68 bpm, blood pressure 114/74, sleep quality: Good",neutral,67.1,92.7,2.85
+"Biometric snapshot — heart rate 65, blood pressure 115/75, classified as Normal, sleep quality: Excellent",mindfulness,66.7,93.7,0.76
+"Biometric snapshot — heart rate 70, blood pressure 115/74, classified as Normal, sleep quality: Excellent",neutral,71.5,101.6,1.74
+"Personalized health plan based on biometric data, patient transitioning toward hope",hope,77.2,58.5,2.67
+Continuous wearable data reveals high stress anomaly that is stable over 5 days,overwhelmed,97.4,26.7,8.16
+"Time-series health data: Hypertension reading, HR 130, BP 185/120, activity: Inactive, sleep quality: Poor",stressed,130.3,50.8,7.15
+"Physiological monitoring: stress anomaly detected, high severity, stable over time",calm,69.5,68.2,1.95
+Biometric analysis shows stress anomaly over 5 days. Severity: high. Trend: stable,overwhelmed,87.7,32.3,7.66
+"Wearable reading: HR 72 bpm, BP 121/80, sleep quality: Good, activity: Active. Status: Normal",calm,70.7,102.5,0.9
+"Biometric snapshot — heart rate 102, blood pressure 138/92, classified as Abnormal, sleep quality: Fair",worry,102.6,88.7,4.56
+Health intervention plan addressing 压力: patient shows signs of relief,relief,64.6,72.7,3.41
+"Wearable monitoring detected high-severity stress anomaly over 5 days, trend is stable",neutral,65.1,66.7,2.1
+"Wearable reading: HR 73 bpm, BP 117/76, sleep quality: Good, activity: Moderate. Status: Normal",relief,74.9,97.5,2.02
+"Time-series health data: Normal reading, HR 75, BP 116/76, activity: Sedentary, sleep quality: Excellent",neutral,76.6,95.9,2.08
+"Recovery plan initiated for wearable-detected anomaly, emotional state: hope",hope,69.6,71.2,2.2
+"Health anomaly report: stress anomaly with high severity, improving trajectory over 5 days",anxiety,82.8,29.0,5.23
+Wearable data informs intervention: addressing physiological indicators of mindfulness,mindfulness,61.5,80.5,0.66
+"Personalized health plan based on biometric data, patient transitioning toward calm",calm,69.3,82.2,1.21
+Health intervention plan addressing 压力: patient shows signs of mindfulness,mindfulness,58.6,94.6,1.49
+"Wearable reading: HR 125 bpm, BP 160/100, sleep quality: Very Poor, activity: Inactive. Status: Abnormal",worry,125.4,69.9,3.71
+Wearable data informs intervention: addressing physiological indicators of hope,hope,77.5,73.4,1.63
+"Biometric snapshot — heart rate 68, blood pressure 112/75, classified as Normal, sleep quality: Excellent",calm,69.3,95.2,0.98
+"Health anomaly report: stress anomaly with high severity, improving trajectory over 27 days",anxiety,78.9,28.2,7.76
+"Health monitor: Hypertension status with HR=120 bpm, BP=180/110, activity: Inactive",worry,121.0,56.0,4.75
+Wearable data informs intervention: addressing physiological indicators of mindfulness,mindfulness,67.5,73.5,1.47
+"Wearable monitoring detected high-severity stress anomaly over 5 days, trend is stable",worry,82.2,43.2,5.08
+"Health monitor: Abnormal status with HR=100 bpm, BP=135/85, activity: Sedentary",worry,99.7,89.7,4.52
+Time-series analysis: high-level stress anomaly over 28 days with stable trend,stressed,101.8,38.8,6.69
