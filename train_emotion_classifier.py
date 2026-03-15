@@ -691,6 +691,23 @@ def train(args):
     print(f"\n  Loading emotion data from {args.data_dir}...")
     data = load_emotion_data(Path(args.data_dir))
 
+    # Load external data if provided
+    if args.external_data:
+        ext_path = Path(args.external_data)
+        if ext_path.exists():
+            print(f"\n  Loading external data from {ext_path}...")
+            ext_df = pd.read_csv(ext_path)
+            ext_count = 0
+            for _, row in ext_df.iterrows():
+                text = str(row['text']).strip()
+                emotion = str(row['emotion']).strip()
+                if text and len(text) > 10 and emotion in EMOTION_TO_IDX:
+                    data.append((text, emotion))
+                    ext_count += 1
+            print(f"  Loaded {ext_count} external samples (from {len(ext_df)} rows)")
+        else:
+            print(f"  [!] External data not found: {ext_path}")
+
     # Filter to known emotions only
     data = [(t, e) for t, e in data if e in EMOTION_TO_IDX]
     print(f"  Usable samples (known emotions): {len(data)}")
@@ -933,6 +950,8 @@ if __name__ == '__main__':
                         help='Path to nanoGPT checkpoint (if not using sentence-transformer)')
     # Data & training
     parser.add_argument('--data-dir', default=os.path.expanduser('~/Downloads'))
+    parser.add_argument('--external-data', default=None,
+                        help='Path to external emotion CSV (e.g. data/external_datasets/external_emotion_data.csv)')
     parser.add_argument('--epochs', type=int, default=20)
     parser.add_argument('--batch-size', type=int, default=64)
     parser.add_argument('--lr', type=float, default=1e-3)
