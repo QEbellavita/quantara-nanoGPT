@@ -1211,8 +1211,26 @@ def train(args):
               + list(fusion_head.parameters()))
     optimizer = torch.optim.AdamW(params, lr=args.lr, weight_decay=0.01)
 
-    emotion_criterion = nn.NLLLoss()
-    family_criterion = nn.NLLLoss()
+    # Compute class weights from training data to handle imbalanced emotions
+    emotion_label_list = train_dataset.emotion_labels.numpy()
+    emotion_counts = np.bincount(emotion_label_list, minlength=32).astype(np.float32)
+    # Inverse frequency weighting, capped to avoid extreme weights on tiny classes
+    emotion_weights = np.where(emotion_counts > 0, 1.0 / emotion_counts, 0.0)
+    emotion_weights = emotion_weights / emotion_weights.sum() * len(emotion_weights)
+    emotion_weights = np.clip(emotion_weights, 0.5, 10.0)  # cap extreme weights
+    emotion_weight_tensor = torch.tensor(emotion_weights, dtype=torch.float32).to(device)
+    print(f"\n  Class weights: min={emotion_weights.min():.2f}, max={emotion_weights.max():.2f}, "
+          f"mean={emotion_weights.mean():.2f}")
+
+    family_label_list = train_dataset.family_labels.numpy()
+    family_counts = np.bincount(family_label_list, minlength=9).astype(np.float32)
+    family_weights = np.where(family_counts > 0, 1.0 / family_counts, 0.0)
+    family_weights = family_weights / family_weights.sum() * len(family_weights)
+    family_weights = np.clip(family_weights, 0.5, 5.0)
+    family_weight_tensor = torch.tensor(family_weights, dtype=torch.float32).to(device)
+
+    emotion_criterion = nn.NLLLoss(weight=emotion_weight_tensor)
+    family_criterion = nn.NLLLoss(weight=family_weight_tensor)
     distill_criterion = nn.KLDivLoss(reduction='batchmean')
 
     # Loss weights
