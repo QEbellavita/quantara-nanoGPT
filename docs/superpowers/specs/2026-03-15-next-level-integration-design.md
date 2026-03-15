@@ -50,7 +50,23 @@ Central ProfileEventBus with topic-based pub/sub. Services publish events → pr
 
 ### Threading Model
 
-The bus runs on the main thread. `publish()` calls subscriber callbacks synchronously in the publishing thread. For I/O-bound subscribers (outbound webhooks, WebSocket emit), callbacks enqueue work to their own worker threads rather than blocking the bus.
+The bus classifies subscribers as **sync** or **async**:
+
+- **Sync subscribers** (fast, in-memory): EventLogger (appends to DB queue), EcosystemConnector inbound routing. Called directly in the publishing thread. Must complete in <1ms.
+- **Async subscribers** (CPU or I/O bound): AlertEngine (pattern matching, prediction), IntelligencePublisher (personalization computation), WebSocketRouter (emit), OutboundWebhook (HTTP calls). These enqueue work to their own worker threads via a per-subscriber queue. `publish()` returns immediately after enqueueing.
+
+Subscriber registration specifies mode: `bus.subscribe('alert.*', callback, mode='async')`.
+
+### Process Trigger Strategy
+
+`process()` is NOT triggered on every inbound event (too expensive). Instead:
+
+- **Debounced trigger:** After an event is ingested, a 30-second debounce timer starts. If more events arrive within 30 seconds, the timer resets. When the timer fires, `process()` runs for all users with new events since last process.
+- **Event count trigger:** If 20+ events accumulate for a single user before the debounce fires, `process()` runs immediately for that user.
+- **On-demand:** API endpoints that need fresh data (snapshot, sync) still call `process()` directly.
+- **Periodic:** A background timer runs `process()` for all active users every 5 minutes regardless, to catch stragglers.
+
+This ensures real-time responsiveness without processing on every biometric reading.
 
 ## 2. Ecosystem Ingestion — All Data Sources Connected
 
@@ -117,6 +133,10 @@ Each conversation turn is summarized before sending (not full transcript):
 
 This feeds Linguistic DNA (word count, tone, style), Social DNA (interaction pattern), and Aspirational DNA (goals mentioned).
 
+### Multi-Domain Event Routing
+
+When an ingest event has a domain that maps to multiple DNA domains (e.g., HealthKit `health_reading` feeds both biometric and temporal), the EcosystemConnector publishes to **each relevant `event.*` topic separately**. A single ingest payload results in multiple bus publications, each with the same payload but different topic. The profile engine's domain processors each receive only events matching their domain.
+
 ## 3. Intelligence Feedback Loops — Personalization Flowing Out
 
 After each `process()` cycle, IntelligencePublisher computes and publishes personalization data.
@@ -132,7 +152,7 @@ Computed from Behavioral + Cognitive DNA:
 - Technique scores: per-technique effectiveness rate from session outcomes
 - Preferred step types: calming vs activation vs cognitive based on response rates
 - Advisory mode: Scores attached as metadata on transition pathway responses
-- Active mode: Directly adjust edge weights in AdaptiveWeightTracker SQLite
+- Active mode: Adjust edge weights in AdaptiveWeightTracker SQLite. All weight changes are logged to a `therapy_audit_log` table (user_id, old_weight, new_weight, reason, timestamp). A therapist override endpoint `POST /api/profile/<user_id>/therapy/override` allows reverting any active personalization to advisory mode for a specific user. Weight changes are bounded to ±30% of the original weight — the system fine-tunes paths, it doesn't rewrite them.
 
 ### Coaching Personalization (→ AI Coach on Backend)
 
@@ -197,9 +217,14 @@ AlertEngine subscribes to all `event.*` topics and runs two detection systems.
 
 **Signature matching:** Store the fingerprint snapshot from the last 3 times the user entered a concerning pattern. When current readings match a stored signature (cosine similarity > 0.8 across relevant domains), fire a predictive alert with the matched pattern type.
 
-**Trend extrapolation:** If emotional volatility has been increasing linearly over the past 7 days, compute when it will cross the spiral threshold. Alert 24 hours before predicted crossing.
+- **Concerning patterns** (for initial labeling): Any reactive alert that fires is a concerning pattern. The fingerprint snapshot at alert time is stored as a signature.
+- **Signature vector dimensions:** emotional.volatility, emotional.dominant_family, biometric.stress_ratio, biometric.resting_hr (normalized), behavioral.completion_rate, temporal.peak_hours_variance — 6 dimensions total.
+- **Cold start:** Predictive alerts are disabled until 3+ signatures have been collected (requires 3+ reactive alert events). Until then, only reactive alerts fire.
+- **Signature updates:** Oldest signature is dropped when a 4th is collected (sliding window of 3).
 
-**Temporal patterns:** If the user historically has stress spikes at specific times (e.g., Monday mornings), alert beforehand with a pre-emptive recommendation.
+**Trend extrapolation:** If emotional volatility has been increasing linearly over the past 7 days (linear regression R² > 0.6), compute when it will cross the spiral threshold. Alert 24 hours before predicted crossing.
+
+**Temporal patterns:** If the user has had 3+ stress events at the same day-of-week/hour (±1 hour window), alert beforehand with a pre-emptive recommendation.
 
 ### Alert Payload
 
@@ -218,7 +243,7 @@ AlertEngine subscribes to all `event.*` topics and runs two detection systems.
 
 ### Alert Fatigue Prevention
 
-- Same alert type fires at most once per 4 hours per user
+- Same alert type + same detection method fires at most once per 4 hours per user (reactive and predictive alerts for the same type are independent cooldowns)
 - Low severity alerts suppressed while a high severity alert is active
 - Stage 1 (Nascent) users only receive positive alerts — not enough data for accurate warnings
 - Predictive alerts require confidence > 0.7 to fire
@@ -308,6 +333,7 @@ quantara-nanoGPT/
 - After `process()`, publish to bus: `profile.updated`, `profile.domain.<domain>` for changed domains, `profile.stage.changed` on transitions
 - Initialize AlertEngine and IntelligencePublisher as bus subscribers
 - Add `set_event_bus(bus)` method
+- **Remove** existing `set_socketio()` and direct `self._socketio.emit()` calls — replaced by WebSocketRouter subscribing to the bus. No more duplicate emissions.
 
 **emotion_api_server.py:**
 - Initialize ProfileEventBus on startup
@@ -316,7 +342,7 @@ quantara-nanoGPT/
 
 **profile_api.py:**
 - EcosystemConnector receives `/api/profile/ingest` events and publishes to bus (backward compatible — same endpoint, same auth)
-- New endpoint: `POST /api/profile/services/register` for services to register their intelligence webhook URL
+- New endpoint: `POST /api/profile/services/register` (requires service API key via `X-Service-Key` header) for services to register their intelligence webhook URL. Registered URLs are validated against a configurable allowlist in environment variable `PROFILE_ALLOWED_WEBHOOK_HOSTS`.
 
 ## 7. Error Handling & Resilience
 
@@ -344,7 +370,12 @@ quantara-nanoGPT/
 ### Ecosystem Connector
 - Inbound webhooks with bad auth/missing fields return 4xx immediately
 - Valid events that fail processing queued in dead letter buffer (max 1000 events, FIFO)
+- Dead letter buffer is **persisted to SQLite** (`dead_letter_events` table) so events survive server crashes. On startup, pending dead letter events are replayed.
 - Dead letter events retried on next processing cycle
+
+### Intelligence Payload Versioning
+
+All intelligence payloads include a `schema_version` field (starting at 1). Subscribing services should ignore payloads with unrecognized versions rather than failing.
 
 ## 8. Connection to Neural Workflow AI Engine
 
