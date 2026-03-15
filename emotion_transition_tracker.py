@@ -127,13 +127,16 @@ class EmotionTransitionTracker:
 
     def __init__(self, persist_dir: Optional[str] = None,
                  auto_persist: bool = True,
-                 max_history_per_user: int = 5000):
+                 max_history_per_user: int = 5000,
+                 profile_engine=None):
         """
         Args:
             persist_dir: Directory for JSON persistence. None = in-memory only.
             auto_persist: If True, write to disk after every record().
             max_history_per_user: Cap per-user history to bound memory.
+            profile_engine: Optional UserProfileEngine for cross-system event logging.
         """
+        self.profile_engine = profile_engine
         self._persist_dir = persist_dir or self.DEFAULT_PERSIST_DIR
         self._auto_persist = auto_persist
         self._max_history = max_history_per_user
@@ -190,6 +193,16 @@ class EmotionTransitionTracker:
             # Trim to cap
             if len(self._history[user_id]) > self._max_history:
                 self._history[user_id] = self._history[user_id][-self._max_history:]
+
+        if self.profile_engine:
+            try:
+                self.profile_engine.log_event(user_id, 'emotional', 'transition_recorded', {
+                    'emotion': emotion,
+                    'family': family,
+                    'confidence': confidence,
+                }, 'nanogpt', confidence)
+            except Exception:
+                pass
 
         if self._auto_persist:
             self._persist_user(user_id)
@@ -448,6 +461,16 @@ class EmotionTransitionTracker:
                     },
                     'timestamp': now.isoformat(),
                 })
+
+        if self.profile_engine and alerts:
+            try:
+                for pattern in alerts:
+                    self.profile_engine.log_event(user_id, 'emotional', 'pattern_detected', {
+                        'pattern_type': pattern.get('type', 'unknown'),
+                        'severity': pattern.get('severity', 'info'),
+                    }, 'nanogpt')
+            except Exception:
+                pass
 
         return alerts
 

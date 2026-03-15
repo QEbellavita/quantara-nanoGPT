@@ -42,11 +42,14 @@ Start server:
 import os
 import sys
 import json
+import logging
 import pickle
 import argparse
 from pathlib import Path
 from datetime import datetime
 from contextlib import nullcontext
+
+logger = logging.getLogger(__name__)
 
 import torch
 
@@ -104,6 +107,16 @@ try:
     HAS_TRANSITION_TRACKER = True
 except ImportError:
     HAS_TRANSITION_TRACKER = False
+
+# Profile engine integration
+try:
+    from user_profile_engine import UserProfileEngine
+    from profile_api import create_profile_blueprint
+    HAS_PROFILE_ENGINE = True
+except ImportError:
+    HAS_PROFILE_ENGINE = False
+
+profile_engine = None
 
 
 # ─── 32-Emotion Taxonomy ────────────────────────────────────────────────────
@@ -900,6 +913,18 @@ def create_app(model: EmotionGPTModel) -> Flask:
     if transition_tracker:
         logger.info("[EmotionAPI] Emotion Transition Tracker initialized")
 
+    # Initialize profile engine
+    global profile_engine
+    if HAS_PROFILE_ENGINE:
+        try:
+            profile_engine = UserProfileEngine(db_path='data/profile.db')
+            profile_bp = create_profile_blueprint(profile_engine)
+            app.register_blueprint(profile_bp)
+            print("✓ Profile engine initialized")
+        except Exception as e:
+            print(f"⚠ Profile engine failed to initialize: {e}")
+            profile_engine = None
+
     def require_model():
         """Check if model is loaded, return error response if not"""
         if model is None:
@@ -1016,6 +1041,25 @@ def create_app(model: EmotionGPTModel) -> Flask:
                     )
                 except Exception:
                     # Non-blocking: tracker errors must not affect the analysis response
+                    pass
+
+            # Log to profile engine
+            if profile_engine:
+                try:
+                    user_id = data.get('user_id', 'default')
+                    profile_engine.log_event(user_id, 'emotional', 'emotion_classified', {
+                        'emotion': result.get('emotion', 'neutral'),
+                        'family': result.get('family', 'Neutral'),
+                        'confidence': result.get('confidence', 0.5),
+                    }, 'nanogpt', result.get('confidence'))
+                    if text:
+                        profile_engine.log_event(user_id, 'linguistic', 'text_analyzed', {
+                            'text': text[:500],
+                        }, 'nanogpt')
+                    profile_engine.log_event(user_id, 'temporal', 'session_started', {
+                        'endpoint': 'analyze',
+                    }, 'nanogpt')
+                except Exception:
                     pass
 
             return jsonify({**result, 'status': 'success'})
@@ -1359,6 +1403,15 @@ def create_app(model: EmotionGPTModel) -> Flask:
         bio = context_provider.get_ruview_biometrics()
         if bio is None:
             return jsonify({'error': 'RuView data unavailable', 'status': 'error'}), 502
+        if profile_engine:
+            try:
+                profile_engine.log_event('default', 'biometric', 'hr_reading', {
+                    'hr': bio.get('heart_rate'),
+                    'hrv': bio.get('hrv'),
+                    'eda': bio.get('eda'),
+                }, 'nanogpt')
+            except Exception:
+                pass
         return jsonify({**bio, 'status': 'success'})
 
     @app.route('/api/ruview/presence', methods=['GET'])
@@ -1483,6 +1536,16 @@ def create_app(model: EmotionGPTModel) -> Flask:
                 confidence=float(data.get('confidence', 1.0)),
                 timestamp=data.get('timestamp'),
             )
+            if profile_engine:
+                try:
+                    confidence = float(data.get('confidence', 1.0))
+                    family = data.get('family')
+                    profile_engine.log_event(user_id, 'behavioral', 'transition_recorded', {
+                        'emotion': emotion,
+                        'family': family,
+                    }, 'nanogpt', confidence)
+                except Exception:
+                    pass
             return jsonify(result)
         except Exception as e:
             return jsonify({'error': str(e)}), 500
