@@ -28,8 +28,12 @@
 | `domain_processors/aspirational_processor.py` | Aspirational DNA: goals, values, growth areas |
 | `evolution_engine.py` | Stage transitions, confidence computation, synergy detection, snapshots |
 | `user_profile_engine.py` | Orchestrator: EventLogger, ProfileSyncWorker, wires everything |
-| `profile_api.py` | Flask Blueprint: all profile + frontend-compatible endpoints |
+| `profile_api.py` | Flask Blueprint: all profile + frontend-compatible endpoints, auth, rate limiting |
+| `profile_sync_worker.py` | Background thread polling Backend/Master APIs with exponential backoff |
+| `profile_retention.py` | Event retention tiers, aggregation, storage ceiling enforcement |
 | `tests/test_profile_db.py` | DB schema, writer thread, queries |
+| `tests/test_profile_sync.py` | Sync worker polling, backoff, ecosystem integration |
+| `tests/test_profile_retention.py` | Retention tiers, aggregation, ceiling |
 | `tests/test_domain_processors.py` | All 8 domain processors |
 | `tests/test_evolution_engine.py` | Stage transitions, confidence, synergies, snapshots |
 | `tests/test_profile_engine.py` | Orchestrator integration tests |
@@ -1509,6 +1513,29 @@ class TestStageTransitions:
             consecutive_met=3
         )
         assert stage['new_stage'] == 5
+
+    def test_regress_on_sustained_negative(self, engine):
+        stage = engine.evaluate_stage(
+            current_stage=3, confidence=0.4,
+            total_events=200, domains_with_events=5,
+            weeks_of_data=6, positive_patterns=False,
+            synergy_count=0, stability_score=0.2,
+            consecutive_met=0,
+            sustained_negative_weeks=3
+        )
+        assert stage['new_stage'] == 2
+        assert 'recalibration' in stage['reason'].lower()
+
+    def test_no_regress_below_nascent(self, engine):
+        stage = engine.evaluate_stage(
+            current_stage=1, confidence=0.1,
+            total_events=10, domains_with_events=1,
+            weeks_of_data=3, positive_patterns=False,
+            synergy_count=0, stability_score=0.1,
+            consecutive_met=0,
+            sustained_negative_weeks=5
+        )
+        assert stage['new_stage'] == 1
 ```
 
 - [ ] **Step 4: Implement EvolutionEngine**
@@ -1613,12 +1640,23 @@ class EvolutionEngine:
                        total_events: int, domains_with_events: int,
                        weeks_of_data: float, positive_patterns: bool,
                        synergy_count: int, stability_score: float,
-                       consecutive_met: int) -> Dict:
+                       consecutive_met: int,
+                       sustained_negative_weeks: float = 0) -> Dict:
         """Evaluate whether user should advance/regress stages.
 
         Returns: {'new_stage': int, 'changed': bool, 'reason': str}
         """
         target_stage = current_stage
+
+        # Check regression first: sustained negative patterns for 2+ weeks
+        if current_stage > 1 and sustained_negative_weeks >= 2:
+            target_stage = current_stage - 1
+            return {
+                'new_stage': target_stage,
+                'changed': True,
+                'reason': f'Recalibration: moving from {STAGE_NAMES[current_stage]} back to {STAGE_NAMES[target_stage]} for renewed growth. This is a normal part of the journey.',
+                'stage_name': STAGE_NAMES[target_stage],
+            }
 
         # Check advancement criteria
         if current_stage == 1:
@@ -2422,7 +2460,16 @@ def create_profile_blueprint(engine) -> Blueprint:
 
     # --- Ecosystem service endpoints ---
 
+    @bp.route('/api/profile/<user_id>/predictions', methods=['GET'])
+    def predictions(user_id):
+        engine.process(user_id)
+        profile = engine.get_profile(user_id)
+        fingerprint = json.loads(profile['fingerprint_json']) if profile.get('fingerprint_json') else {}
+        preds = _compute_predictions(fingerprint, profile)
+        return jsonify(preds)
+
     @bp.route('/api/profile/<user_id>/context', methods=['GET'])
+    @require_service_key
     def context(user_id):
         profile = engine.get_profile(user_id)
         fingerprint = json.loads(profile['fingerprint_json']) if profile.get('fingerprint_json') else {}
@@ -2440,6 +2487,7 @@ def create_profile_blueprint(engine) -> Blueprint:
         })
 
     @bp.route('/api/profile/<user_id>/domain/<domain>/score', methods=['GET'])
+    @require_service_key
     def domain_score(user_id, domain):
         profile = engine.get_profile(user_id)
         fingerprint = json.loads(profile['fingerprint_json']) if profile.get('fingerprint_json') else {}
@@ -2869,4 +2917,678 @@ Check if scipy is already in requirements (it is). No changes needed.
 
 ```bash
 git log --oneline -10  # Verify all commits
+```
+
+---
+
+## Chunk 8: Missing Spec Features — Sync Worker, Retention, WebSocket, Predictions
+
+### Task 10: ProfileSyncWorker — Ecosystem Polling
+
+**Files:**
+- Create: `profile_sync_worker.py`
+- Create: `tests/test_profile_sync.py`
+
+- [ ] **Step 1: Write failing tests**
+
+```python
+# tests/test_profile_sync.py
+"""Tests for ProfileSyncWorker ecosystem polling."""
+
+import pytest
+import os
+import sys
+import time
+import threading
+from unittest.mock import patch, MagicMock
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+class TestProfileSyncWorker:
+
+    @pytest.fixture
+    def engine(self, tmp_path):
+        from user_profile_engine import UserProfileEngine
+        eng = UserProfileEngine(db_path=str(tmp_path / 'test.db'))
+        yield eng
+        eng.close()
+
+    def test_worker_starts_and_stops(self, engine):
+        from profile_sync_worker import ProfileSyncWorker
+        worker = ProfileSyncWorker(engine, poll_interval=1)
+        worker.start()
+        assert worker.is_alive()
+        worker.stop()
+        worker.join(timeout=3)
+        assert not worker.is_alive()
+
+    def test_backoff_increases_on_failure(self, engine):
+        from profile_sync_worker import ProfileSyncWorker
+        worker = ProfileSyncWorker(engine, poll_interval=5)
+        assert worker._current_interval == 5
+        worker._on_poll_failure()
+        assert worker._current_interval == 10
+        worker._on_poll_failure()
+        assert worker._current_interval == 20
+
+    def test_backoff_caps_at_60_min(self, engine):
+        from profile_sync_worker import ProfileSyncWorker
+        worker = ProfileSyncWorker(engine, poll_interval=5)
+        for _ in range(20):
+            worker._on_poll_failure()
+        assert worker._current_interval <= 3600
+
+    def test_backoff_resets_on_success(self, engine):
+        from profile_sync_worker import ProfileSyncWorker
+        worker = ProfileSyncWorker(engine, poll_interval=5)
+        worker._on_poll_failure()
+        worker._on_poll_failure()
+        assert worker._current_interval > 5
+        worker._on_poll_success()
+        assert worker._current_interval == 5
+```
+
+- [ ] **Step 2: Implement ProfileSyncWorker**
+
+```python
+# profile_sync_worker.py
+"""
+===============================================================================
+QUANTARA NEURAL ECOSYSTEM - Profile Sync Worker
+===============================================================================
+Background thread that polls Quantara Backend and Master APIs for new data
+and ingests it into the profile engine.
+
+Integrates with:
+- Neural Workflow AI Engine
+- Quantara Backend engines
+- Quantara Master workflows
+===============================================================================
+"""
+
+import time
+import logging
+import threading
+from typing import Optional
+
+import requests
+
+logger = logging.getLogger(__name__)
+
+
+class ProfileSyncWorker(threading.Thread):
+    """Background thread polling ecosystem services for profile data."""
+
+    def __init__(self, engine, poll_interval: int = 300,
+                 backend_url: str = None, master_url: str = None):
+        super().__init__(daemon=True, name='ProfileSyncWorker')
+        self.engine = engine
+        self._base_interval = poll_interval
+        self._current_interval = poll_interval
+        self._max_interval = 3600  # 60 min cap
+        self._running = False
+        self._stop_event = threading.Event()
+
+        self.backend_url = backend_url or 'http://localhost:3001'
+        self.master_url = master_url or 'http://localhost:3002'
+
+    def start(self):
+        self._running = True
+        super().start()
+
+    def stop(self):
+        self._running = False
+        self._stop_event.set()
+
+    def run(self):
+        logger.info("ProfileSyncWorker started (interval=%ds)", self._base_interval)
+        while self._running:
+            try:
+                self._poll_backend()
+                self._poll_master()
+                self._on_poll_success()
+            except Exception as e:
+                logger.error("Sync poll failed: %s", e)
+                self._on_poll_failure()
+            self._stop_event.wait(timeout=self._current_interval)
+            if self._stop_event.is_set():
+                break
+        logger.info("ProfileSyncWorker stopped")
+
+    def _poll_backend(self):
+        """Pull emotion/biometric/stress data from Quantara Backend."""
+        try:
+            resp = requests.get(f'{self.backend_url}/api/health', timeout=5)
+            if resp.status_code != 200:
+                return
+            # Pull recent emotion data if available
+            resp = requests.get(f'{self.backend_url}/api/emotion/recent', timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                for item in data.get('items', []):
+                    self.engine.log_event(
+                        item.get('user_id', 'default'),
+                        item.get('domain', 'emotional'),
+                        item.get('event_type', 'backend_sync'),
+                        item.get('payload', {}),
+                        'backend',
+                        item.get('confidence')
+                    )
+        except requests.RequestException:
+            raise  # Let run() handle it
+
+    def _poll_master(self):
+        """Pull workflow/case data from Quantara Master."""
+        try:
+            resp = requests.get(f'{self.master_url}/api/v1/health', timeout=5)
+            if resp.status_code != 200:
+                return
+            resp = requests.get(f'{self.master_url}/api/v1/workflows/recent', timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                for item in data.get('items', []):
+                    self.engine.log_event(
+                        item.get('user_id', 'default'),
+                        'behavioral',
+                        'workflow_action',
+                        item.get('payload', {}),
+                        'master',
+                        item.get('confidence')
+                    )
+        except requests.RequestException:
+            raise
+
+    def _on_poll_failure(self):
+        self._current_interval = min(self._current_interval * 2, self._max_interval)
+        logger.warning("Backoff increased to %ds", self._current_interval)
+
+    def _on_poll_success(self):
+        self._current_interval = self._base_interval
+
+    def is_alive(self):
+        return self._running and super().is_alive()
+```
+
+- [ ] **Step 3: Run tests**
+
+Run: `cd /Users/bel/quantara-nanoGPT && python -m pytest tests/test_profile_sync.py -v`
+Expected: All tests PASS
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add profile_sync_worker.py tests/test_profile_sync.py
+git commit -m "feat(profile): add ProfileSyncWorker for ecosystem polling"
+```
+
+### Task 11: Event Retention & Aggregation
+
+**Files:**
+- Create: `profile_retention.py`
+- Create: `tests/test_profile_retention.py`
+
+- [ ] **Step 1: Write failing tests**
+
+```python
+# tests/test_profile_retention.py
+"""Tests for event retention and aggregation."""
+
+import pytest
+import os
+import sys
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+class TestRetention:
+
+    @pytest.fixture
+    def db(self, tmp_path):
+        from profile_db import ProfileDB
+        db = ProfileDB(str(tmp_path / 'test.db'))
+        yield db
+        db.close()
+
+    def test_aggregate_old_events(self, db):
+        from profile_retention import RetentionManager
+        mgr = RetentionManager(db)
+        # Log events with old timestamps (40 days ago)
+        old_time = time.time() - 40 * 86400
+        for i in range(100):
+            db.log_event('user1', 'biometric', 'hr_reading',
+                         {'hr': 70 + i % 10}, 'nanogpt',
+                         timestamp=old_time + i * 60)
+        # Run aggregation
+        result = mgr.run_aggregation('user1')
+        assert result['aggregated'] > 0
+
+    def test_storage_ceiling_triggers_early_aggregation(self, db):
+        from profile_retention import RetentionManager
+        mgr = RetentionManager(db, ceiling_per_user=50)  # Low ceiling for testing
+        for i in range(60):
+            db.log_event('user1', 'emotional', 'e1', {'i': i}, 'nanogpt')
+        result = mgr.enforce_ceiling('user1')
+        count = db.get_event_count('user1')
+        assert count <= 50
+```
+
+- [ ] **Step 2: Implement RetentionManager**
+
+```python
+# profile_retention.py
+"""
+===============================================================================
+QUANTARA NEURAL ECOSYSTEM - Profile Event Retention
+===============================================================================
+Tiered event retention: raw → hourly → daily → weekly aggregation.
+Enforces per-user storage ceiling.
+
+Integrates with:
+- Neural Workflow AI Engine
+- Profile Database
+===============================================================================
+"""
+
+import time
+import json
+import logging
+from typing import Dict
+
+logger = logging.getLogger(__name__)
+
+
+class RetentionManager:
+    """Manages event retention tiers and storage ceilings."""
+
+    def __init__(self, db, ceiling_per_user: int = 500000):
+        self.db = db
+        self.ceiling_per_user = ceiling_per_user
+
+    def run_aggregation(self, user_id: str) -> Dict:
+        """Aggregate old events into summaries per retention tiers."""
+        now = time.time()
+        aggregated = 0
+
+        # Tier 1: Events 30-90 days old → hourly summaries
+        cutoff_30d = now - 30 * 86400
+        cutoff_90d = now - 90 * 86400
+        aggregated += self._aggregate_range(user_id, cutoff_90d, cutoff_30d, 3600, 'hourly')
+
+        # Tier 2: Events 90-180 days old → daily summaries
+        cutoff_180d = now - 180 * 86400
+        aggregated += self._aggregate_range(user_id, cutoff_180d, cutoff_90d, 86400, 'daily')
+
+        # Tier 3: Events >180 days old → weekly summaries
+        aggregated += self._aggregate_range(user_id, 0, cutoff_180d, 7 * 86400, 'weekly')
+
+        return {'aggregated': aggregated, 'user_id': user_id}
+
+    def _aggregate_range(self, user_id: str, start: float, end: float,
+                         window_seconds: int, summary_type: str) -> int:
+        """Aggregate events in a time range into windows."""
+        conn = self.db._read_conn()
+        rows = conn.execute(
+            "SELECT * FROM events WHERE user_id = ? AND timestamp >= ? AND timestamp < ? "
+            "AND event_type NOT LIKE '%_summary' ORDER BY timestamp",
+            (user_id, start, end)
+        ).fetchall()
+        conn.close()
+
+        if not rows:
+            return 0
+
+        events = [dict(r) for r in rows]
+        # Group by domain + time window
+        windows = {}
+        for event in events:
+            domain = event['domain']
+            window_key = int(event['timestamp'] // window_seconds)
+            key = (domain, window_key)
+            if key not in windows:
+                windows[key] = []
+            windows[key].append(event)
+
+        aggregated = 0
+        for (domain, window_key), window_events in windows.items():
+            if len(window_events) <= 1:
+                continue
+            # Create summary event
+            window_start = window_key * window_seconds
+            summary_payload = {
+                'type': summary_type,
+                'count': len(window_events),
+                'window_start': window_start,
+                'window_end': window_start + window_seconds,
+            }
+            self.db.log_event(user_id, domain, f'{summary_type}_summary',
+                              summary_payload, 'nanogpt', timestamp=window_start)
+            # Delete original events in this window
+            event_ids = [e['event_id'] for e in window_events]
+            for eid in event_ids:
+                self.db._enqueue_write(
+                    "DELETE FROM events WHERE event_id = ?", (eid,), wait=True
+                )
+            aggregated += len(event_ids)
+
+        return aggregated
+
+    def enforce_ceiling(self, user_id: str) -> Dict:
+        """If user exceeds event ceiling, trigger early aggregation."""
+        count = self.db.get_event_count(user_id)
+        if count <= self.ceiling_per_user:
+            return {'trimmed': False, 'count': count}
+
+        # Aggressive aggregation: aggregate everything older than 7 days
+        cutoff = time.time() - 7 * 86400
+        self._aggregate_range(user_id, 0, cutoff, 3600, 'hourly')
+
+        new_count = self.db.get_event_count(user_id)
+        return {'trimmed': True, 'before': count, 'after': new_count}
+```
+
+- [ ] **Step 3: Run tests**
+
+Run: `cd /Users/bel/quantara-nanoGPT && python -m pytest tests/test_profile_retention.py -v`
+Expected: All tests PASS
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add profile_retention.py tests/test_profile_retention.py
+git commit -m "feat(profile): add RetentionManager for event aggregation and ceiling"
+```
+
+### Task 12: WebSocket Events & Predictions Endpoint
+
+**Files:**
+- Modify: `profile_api.py` — add predictions helper
+- Modify: `user_profile_engine.py` — emit WebSocket events, call synergy detection
+
+- [ ] **Step 1: Add _compute_predictions to profile_api.py**
+
+Add after `_compute_big_five`:
+
+```python
+def _compute_predictions(fingerprint: dict, profile: dict) -> dict:
+    """Compute next-state predictions from fingerprint trends."""
+    emotional = fingerprint.get('emotional', {}).get('metrics', {})
+    biometric = fingerprint.get('biometric', {}).get('metrics', {})
+    temporal = fingerprint.get('temporal', {}).get('metrics', {})
+
+    predictions = {
+        'predicted_dominant_family': emotional.get('dominant_family', 'Neutral'),
+        'expected_stress_level': biometric.get('stress_ratio', 0.0),
+        'optimal_intervention_hours': temporal.get('peak_hours', []),
+        'risk_factors': [],
+        'window_hours': 48,
+    }
+
+    # Risk factors
+    if emotional.get('volatility', 0) > 0.6:
+        predictions['risk_factors'].append('High emotional volatility — monitor for spirals')
+    if biometric.get('stress_ratio', 0) > 0.4:
+        predictions['risk_factors'].append('Elevated stress ratio — consider proactive calming exercises')
+    if emotional.get('recovery_rate', 1.0) < 0.05:
+        predictions['risk_factors'].append('Low recovery rate — emotional support may be needed')
+
+    return predictions
+```
+
+- [ ] **Step 2: Add WebSocket emission to UserProfileEngine.process()**
+
+After the stage change snapshot in `process()`, add:
+
+```python
+# Emit WebSocket events if socketio is available
+if hasattr(self, '_socketio') and self._socketio:
+    try:
+        self._socketio.emit('profile:updated', {
+            'user_id': user_id,
+            'domains_changed': list(fingerprint.keys()),
+            'confidence': confidence,
+        })
+        if stage_result['changed']:
+            self._socketio.emit('profile:stage-change', {
+                'user_id': user_id,
+                'old_stage': current_stage,
+                'new_stage': new_stage,
+                'criteria_met': stage_result['reason'],
+            })
+    except Exception as e:
+        logger.warning("WebSocket emit failed: %s", e)
+```
+
+Add a method to wire socketio:
+
+```python
+def set_socketio(self, socketio):
+    """Wire socket.io instance for real-time events."""
+    self._socketio = socketio
+```
+
+- [ ] **Step 3: Add synergy detection call to process()**
+
+After computing the fingerprint in `process()`, add:
+
+```python
+# Run synergy detection (weekly, but check on every process for simplicity)
+try:
+    daily_scores = self._get_daily_domain_scores(user_id)
+    detected = self.evolution.detect_synergies(user_id, daily_scores)
+    for syn in detected:
+        self.db.save_synergy(user_id, syn['domain_a'], syn['domain_b'],
+                             syn['correlation'], syn['insight'])
+except Exception as e:
+    logger.warning("Synergy detection failed for %s: %s", user_id, e)
+```
+
+Add the helper:
+
+```python
+def _get_daily_domain_scores(self, user_id: str) -> dict:
+    """Get daily aggregate scores per domain over last 28 days."""
+    daily_scores = {}
+    now = time.time()
+    for domain in self.processors:
+        scores = []
+        for day_offset in range(28):
+            day_start = now - (day_offset + 1) * 86400
+            day_end = now - day_offset * 86400
+            events = self.db.get_events(user_id, domain=domain,
+                                        start_time=day_start, end_time=day_end, limit=10000)
+            if events:
+                events.reverse()
+                result = self.processors[domain].compute(events)
+                scores.append(result['score'])
+            else:
+                scores.append(0.0)
+        scores.reverse()  # oldest first
+        daily_scores[domain] = scores
+    return daily_scores
+```
+
+- [ ] **Step 4: Wire socketio in emotion_api_server.py**
+
+After profile engine init, add:
+
+```python
+if HAS_PROFILE_ENGINE and profile_engine:
+    try:
+        from flask_socketio import SocketIO
+        socketio = SocketIO(app, cors_allowed_origins="*")
+        profile_engine.set_socketio(socketio)
+    except ImportError:
+        pass
+```
+
+- [ ] **Step 5: Add test for predictions endpoint**
+
+Append to `tests/test_profile_api.py`:
+
+```python
+class TestPredictionsEndpoint:
+
+    def test_predictions_returns_data(self, client):
+        client.post('/api/profile/ingest',
+            headers={'X-Service-Key': 'test-backend-key'},
+            json={'user_id': 'u1', 'domain': 'emotional',
+                  'event_type': 'emotion_classified',
+                  'payload': {'emotion': 'joy', 'family': 'Joy'},
+                  'source': 'backend'})
+        resp = client.get('/api/profile/u1/predictions')
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert 'predicted_dominant_family' in data
+        assert 'risk_factors' in data
+```
+
+- [ ] **Step 6: Run all tests**
+
+Run: `cd /Users/bel/quantara-nanoGPT && python -m pytest tests/test_profile_api.py tests/test_profile_engine.py -v`
+Expected: All tests PASS
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add profile_api.py user_profile_engine.py emotion_api_server.py tests/test_profile_api.py
+git commit -m "feat(profile): add predictions endpoint, WebSocket events, synergy detection"
+```
+
+---
+
+## Chunk 9: Remaining Integrations
+
+### Task 13: Wire into wifi_calibration.py, auto_retrain.py, external_context.py
+
+**Files:**
+- Modify: `wifi_calibration.py`
+- Modify: `auto_retrain.py`
+- Modify: `external_context.py`
+
+- [ ] **Step 1: Add profile engine to wifi_calibration.py**
+
+In `PersonalCalibrationBuffer.__init__()`, add optional `profile_engine=None` param. In the method that adds readings, add:
+
+```python
+if self.profile_engine:
+    self.profile_engine.log_event(self.profile_id, 'biometric', 'hr_reading', {
+        'hr': heart_rate, 'hrv': hrv, 'eda': eda,
+    }, 'nanogpt')
+```
+
+- [ ] **Step 2: Add profile engine to auto_retrain.py**
+
+In `DriftDetector` or `RetrainWorker`, when drift is detected or retraining triggers, add:
+
+```python
+if profile_engine:
+    profile_engine.log_event(user_id, 'biometric', 'model_drift_detected', {
+        'drift_score': drift_score,
+        'retrain_triggered': True,
+    }, 'nanogpt')
+```
+
+- [ ] **Step 3: Add temporal enrichment to external_context.py**
+
+When external context is fetched, if profile engine is available:
+
+```python
+if profile_engine:
+    profile_engine.log_event(user_id, 'temporal', 'time_correlation', {
+        'hour': datetime.now().hour,
+        'day_of_week': datetime.now().strftime('%A'),
+        'weather': context.get('weather'),
+    }, 'nanogpt')
+```
+
+- [ ] **Step 4: Run existing tests to verify nothing breaks**
+
+Run: `cd /Users/bel/quantara-nanoGPT && python -m pytest tests/ -v --ignore=tests/test_profile_integration.py`
+Expected: All existing tests PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add wifi_calibration.py auto_retrain.py external_context.py
+git commit -m "feat(profile): wire profile engine into WiFi calibration, auto-retrain, external context"
+```
+
+### Task 14: Snapshot Scheduling
+
+**Files:**
+- Modify: `user_profile_engine.py` — add snapshot scheduler
+
+- [ ] **Step 1: Add snapshot scheduling to UserProfileEngine**
+
+Add a method that checks and creates missed snapshots, called from `process()`:
+
+```python
+def _check_snapshots(self, user_id: str, fingerprint: dict, stage: int, confidence: float):
+    """Check for and create any missed scheduled snapshots."""
+    missed = self.evolution.check_missed_snapshots(user_id)
+    for snapshot_type in missed:
+        self.db.save_snapshot(user_id, snapshot_type, fingerprint, stage, confidence)
+        logger.info("Created catch-up %s snapshot for %s", snapshot_type, user_id)
+```
+
+Call it at the end of `process()`:
+
+```python
+self._check_snapshots(user_id, fingerprint, new_stage, confidence)
+```
+
+- [ ] **Step 2: Test snapshot catch-up**
+
+Add to `tests/test_profile_engine.py`:
+
+```python
+def test_catch_up_snapshots(self, engine):
+    """Verify missed snapshots are created on process."""
+    # Create profile with old created_at (2 weeks ago)
+    engine.log_event('user1', 'emotional', 'e1',
+                     {'emotion': 'joy', 'family': 'Joy'}, 'nanogpt')
+    engine.db._enqueue_write(
+        "UPDATE profiles SET created_at = ? WHERE user_id = ?",
+        (time.time() - 15 * 86400, 'user1'), wait=True
+    )
+    engine.process('user1')
+    snapshots = engine.db.get_snapshots('user1')
+    # Should have at least a weekly catch-up snapshot
+    assert any(s['snapshot_type'] == 'weekly' for s in snapshots)
+```
+
+- [ ] **Step 3: Run tests**
+
+Run: `cd /Users/bel/quantara-nanoGPT && python -m pytest tests/test_profile_engine.py -v`
+Expected: All tests PASS
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add user_profile_engine.py tests/test_profile_engine.py
+git commit -m "feat(profile): add snapshot scheduling with catch-up on startup"
+```
+
+---
+
+## Chunk 10: Final Integration Test & Cleanup
+
+### Task 15: Comprehensive Final Test
+
+- [ ] **Step 1: Run full test suite**
+
+Run: `cd /Users/bel/quantara-nanoGPT && python -m pytest tests/test_profile_db.py tests/test_domain_processors.py tests/test_evolution_engine.py tests/test_profile_engine.py tests/test_profile_api.py tests/test_profile_integration.py tests/test_profile_sync.py tests/test_profile_retention.py -v`
+Expected: All tests PASS
+
+- [ ] **Step 2: Verify server starts cleanly**
+
+Run: `cd /Users/bel/quantara-nanoGPT && python -c "from emotion_api_server import app; print('Server imports OK')" 2>&1`
+Expected: No import errors
+
+- [ ] **Step 3: Final commit**
+
+```bash
+git log --oneline -15  # Verify all commits in order
 ```
