@@ -12,6 +12,14 @@ Usage:
 
 Output:
     data/external_datasets/external_emotion_data.csv
+
+Related scripts:
+    prepare_audio.py  - Generates audio-sourced emotion data from TESS and
+                        CREMA-D datasets (outputs audio_emotion_data.csv).
+                        Both CSVs share the same schema (text,emotion,hr,hrv,eda)
+                        and can be concatenated for combined training:
+                            cat audio_emotion_data.csv >> external_emotion_data.csv
+                        Or pass both separately via --external-data.
 ===============================================================================
 """
 
