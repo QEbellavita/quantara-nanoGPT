@@ -115,6 +115,23 @@ CREATE TABLE IF NOT EXISTS synergies (
 
 CREATE INDEX IF NOT EXISTS idx_synergies_user
     ON synergies (user_id);
+
+CREATE TABLE IF NOT EXISTS dead_letter_events (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp REAL    NOT NULL,
+    payload   TEXT    NOT NULL,
+    error     TEXT,
+    retries   INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS therapy_audit_log (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    TEXT    NOT NULL,
+    old_weight REAL,
+    new_weight REAL,
+    reason     TEXT,
+    timestamp  REAL    NOT NULL
+);
 """
 
 
