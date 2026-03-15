@@ -17,8 +17,8 @@ Integrates with:
 - Dashboard Data Integration
 
 Architecture:
-  Input(2) -> Linear(16) -> ReLU -> Linear(2) -> sigmoid rescale
-  HRV range: [10.0, 100.0] ms
+  Input(2) -> normalize -> Linear(32) -> ReLU -> Linear(16) -> ReLU -> Linear(2) -> sigmoid rescale
+  HRV range: [10.0, 250.0] ms  (RMSSD)
   EDA range: [0.5, 20.0] uS
 
 Online adaptation:
@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 # ─── Output bounds ─────────────────────────────────────────────────────────────
 
 HRV_MIN = 10.0
-HRV_MAX = 100.0
+HRV_MAX = 250.0   # RMSSD can reach 200+ ms in relaxed/fit individuals
 EDA_MIN = 0.5
 EDA_MAX = 20.0
 
@@ -51,7 +51,7 @@ EDA_MAX = 20.0
 _BR_MIN = 6.0
 _BR_MAX = 30.0
 _HRV_LIN_MIN = 20.0
-_HRV_LIN_MAX = 95.0
+_HRV_LIN_MAX = 200.0  # Expanded to match real RMSSD range
 
 _MOTION_MIN = 0.0
 _MOTION_MAX = 1.0
@@ -68,19 +68,36 @@ class WiFiCalibrationModel(nn.Module):
     """
     Small neural network: (breathing_rate, motion_level) -> (hrv, eda).
 
+    Input normalization:
+      breathing_rate: centered around 15 BPM, scaled by 10
+      motion_level:   centered around 0.3, scaled by 0.4
+
     Output is bounded via sigmoid activation rescaled to physiological ranges:
-      HRV: [10.0, 100.0] ms
+      HRV: [10.0, 250.0] ms  (RMSSD)
       EDA: [0.5, 20.0] uS
     """
 
+    # Input normalization constants (approximate population means/stds)
+    BR_MEAN = 15.0
+    BR_STD = 5.0
+    MOTION_MEAN = 0.3
+    MOTION_STD = 0.25
+
     def __init__(self):
         super().__init__()
-        self.hidden = nn.Linear(2, 16)
+        self.hidden = nn.Linear(2, 32)
         self.relu = nn.ReLU()
+        self.hidden2 = nn.Linear(32, 16)
         self.output = nn.Linear(16, 2)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        h = self.relu(self.hidden(x))
+        # Normalize inputs to ~zero-mean, unit-variance
+        x_norm = torch.empty_like(x)
+        x_norm[:, 0:1] = (x[:, 0:1] - self.BR_MEAN) / self.BR_STD
+        x_norm[:, 1:2] = (x[:, 1:2] - self.MOTION_MEAN) / self.MOTION_STD
+
+        h = self.relu(self.hidden(x_norm))
+        h = self.relu(self.hidden2(h))
         raw = self.output(h)
         sig = torch.sigmoid(raw)
 
@@ -393,8 +410,10 @@ class PersonalCalibrationBuffer:
             with self._model_lock:
                 cloned = copy.deepcopy(self._model)
 
-            # Freeze hidden layer, only train output
+            # Freeze hidden layers, only train output
             for param in cloned.hidden.parameters():
+                param.requires_grad = False
+            for param in cloned.hidden2.parameters():
                 param.requires_grad = False
             for param in cloned.output.parameters():
                 param.requires_grad = True
