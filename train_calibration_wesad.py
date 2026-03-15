@@ -95,9 +95,65 @@ def load_subject(wesad_path: Path, subject_id: str) -> dict | None:
         return None
 
 
+def extract_hr_hrv_from_ecg(ecg: np.ndarray, fs: int = 700) -> tuple:
+    """
+    Extract heart rate and HRV from chest ECG signal (WESAD RespiBAN, 700 Hz).
+    Uses R-peak detection on bandpass-filtered ECG for reliable RR intervals.
+    Returns (heart_rate_bpm, hrv_rmssd_ms).
+    """
+    if len(ecg) < fs * 5:
+        return None, None
+
+    ecg = ecg.flatten()
+
+    # Bandpass filter 5-15 Hz to isolate QRS complex
+    nyq = fs / 2
+    b, a = scipy_signal.butter(3, [5.0 / nyq, 15.0 / nyq], btype='band')
+    filtered = scipy_signal.filtfilt(b, a, ecg)
+
+    # Square the signal to emphasize R-peaks
+    squared = filtered ** 2
+
+    # Find R-peaks with minimum distance of 0.33s (180 BPM max)
+    min_distance = int(fs * 0.33)
+    # Use height threshold at 30th percentile of squared signal to reject noise
+    height_thresh = np.percentile(squared, 70)
+    peaks, _ = scipy_signal.find_peaks(squared, distance=min_distance, height=height_thresh)
+
+    if len(peaks) < 3:
+        return None, None
+
+    # RR intervals in ms
+    rr = np.diff(peaks) / fs * 1000
+
+    # Filter physiologically implausible RR intervals (40-200 BPM)
+    rr = rr[(rr > 300) & (rr < 1500)]
+    if len(rr) < 2:
+        return None, None
+
+    # Remove outlier RR intervals (beyond 2 * IQR)
+    rr_iqr = iqr(rr)
+    rr_median = np.median(rr)
+    rr = rr[(rr > rr_median - 2 * rr_iqr) & (rr < rr_median + 2 * rr_iqr)]
+    if len(rr) < 2:
+        return None, None
+
+    hr = 60000.0 / np.mean(rr)
+    hr = float(np.clip(hr, 40, 180))
+
+    # RMSSD (root mean square of successive differences) — standard HRV metric
+    successive_diffs = np.diff(rr)
+    hrv_rmssd = float(np.sqrt(np.mean(successive_diffs ** 2)))
+    hrv_rmssd = float(np.clip(hrv_rmssd, 5, 250))
+
+    return hr, hrv_rmssd
+
+
 def extract_hr_hrv_from_bvp(bvp: np.ndarray, fs: int = 64) -> tuple:
     """
-    Extract heart rate and HRV from Blood Volume Pulse signal.
+    Extract heart rate and HRV from wrist Blood Volume Pulse signal.
+    NOTE: Prefer extract_hr_hrv_from_ecg() when chest ECG is available —
+    wrist BVP produces artifact-inflated RMSSD during movement/stress.
     Returns (heart_rate_bpm, hrv_rmssd_ms).
     """
     if len(bvp) < fs * 5:
@@ -242,11 +298,10 @@ def extract_windows_from_subject(data: dict) -> list:
         chest_eda_window = chest['EDA'][resp_start:resp_end]
         eda = extract_eda_level(chest_eda_window)
 
-        # Extract wrist BVP → HR, HRV
-        bvp_start = int(t_start * WRIST_BVP_FS)
-        bvp_end = int(t_end * WRIST_BVP_FS)
-        bvp_window = wrist['BVP'][bvp_start:bvp_end]
-        hr, hrv = extract_hr_hrv_from_bvp(bvp_window, WRIST_BVP_FS)
+        # Extract chest ECG → HR, HRV (much more reliable than wrist BVP,
+        # which produces motion-artifact-inflated RMSSD during stress)
+        ecg_window = chest['ECG'][resp_start:resp_end]
+        hr, hrv = extract_hr_hrv_from_ecg(ecg_window, CHEST_FS)
 
         # Extract wrist accelerometer → motion level
         acc_start = int(t_start * WRIST_ACC_FS)
@@ -266,6 +321,7 @@ def extract_windows_from_subject(data: dict) -> list:
             'motion_level': motion,
             'label': int(dominant_label),
             'label_name': LABELS[dominant_label],
+            'subject': None,  # filled in by caller
         })
 
     return results
@@ -282,7 +338,8 @@ def build_training_data(wesad_path: Path) -> tuple:
     subjects = sorted([d.name for d in wesad_path.iterdir()
                        if d.is_dir() and d.name.startswith('S')])
 
-    all_windows = []
+    # Collect windows per subject for per-subject normalization
+    subject_windows = {}
 
     for sid in subjects:
         print(f"  Processing {sid}...", end=' ')
@@ -292,11 +349,53 @@ def build_training_data(wesad_path: Path) -> tuple:
             continue
 
         windows = extract_windows_from_subject(data)
-        all_windows.extend(windows)
+        for w in windows:
+            w['subject'] = sid
+        subject_windows[sid] = windows
         print(f"{len(windows)} windows extracted")
 
+    all_windows = [w for ws in subject_windows.values() for w in ws]
     if not all_windows:
         return None, None
+
+    # Per-subject normalization: remove inter-subject offset while preserving
+    # within-subject arousal patterns (stress → higher EDA relative to baseline)
+    # Strategy: z-score within each subject, then rescale to global distribution
+    global_hrv = np.array([w['hrv'] for w in all_windows])
+    global_eda = np.array([w['eda'] for w in all_windows])
+    global_hrv_mean, global_hrv_std = global_hrv.mean(), global_hrv.std()
+    global_eda_mean, global_eda_std = global_eda.mean(), global_eda.std()
+
+    print(f"\n  Per-subject normalization:")
+    print(f"    Global HRV: mean={global_hrv_mean:.1f} ms, std={global_hrv_std:.1f} ms")
+    print(f"    Global EDA: mean={global_eda_mean:.1f} µS, std={global_eda_std:.1f} µS")
+
+    for sid, windows in subject_windows.items():
+        if len(windows) < 5:
+            continue
+        subj_hrv = np.array([w['hrv'] for w in windows])
+        subj_eda = np.array([w['eda'] for w in windows])
+        subj_hrv_mean, subj_hrv_std = subj_hrv.mean(), max(subj_hrv.std(), 1.0)
+        subj_eda_mean, subj_eda_std = subj_eda.mean(), max(subj_eda.std(), 0.1)
+
+        for w in windows:
+            # Z-score within subject, rescale to global distribution
+            w['hrv'] = (w['hrv'] - subj_hrv_mean) / subj_hrv_std * global_hrv_std + global_hrv_mean
+            w['eda'] = (w['eda'] - subj_eda_mean) / subj_eda_std * global_eda_std + global_eda_mean
+
+    # Print statistics after normalization
+    print(f"\n  Dataset statistics after per-subject normalization ({len(all_windows)} windows):")
+    for label_id, label_name in LABELS.items():
+        count = sum(1 for w in all_windows if w['label'] == label_id)
+        if count > 0:
+            subset = [w for w in all_windows if w['label'] == label_id]
+            avg_hr = np.mean([w['hr'] for w in subset])
+            avg_hrv = np.mean([w['hrv'] for w in subset])
+            avg_eda = np.mean([w['eda'] for w in subset])
+            avg_br = np.mean([w['breathing_rate'] for w in subset])
+            print(f"    {label_name:12s}: {count:4d} windows | "
+                  f"HR={avg_hr:.0f} bpm, HRV={avg_hrv:.0f} ms, "
+                  f"EDA={avg_eda:.1f} µS, BR={avg_br:.0f} bpm")
 
     # Build training pairs
     inputs = []
@@ -311,20 +410,6 @@ def build_training_data(wesad_path: Path) -> tuple:
 
     X = torch.tensor(np.array(inputs, dtype=np.float32))
     Y = torch.tensor(np.array(targets, dtype=np.float32))
-
-    # Print statistics
-    print(f"\n  Dataset statistics ({len(all_windows)} windows):")
-    for label_id, label_name in LABELS.items():
-        count = sum(1 for w in all_windows if w['label'] == label_id)
-        if count > 0:
-            subset = [w for w in all_windows if w['label'] == label_id]
-            avg_hr = np.mean([w['hr'] for w in subset])
-            avg_hrv = np.mean([w['hrv'] for w in subset])
-            avg_eda = np.mean([w['eda'] for w in subset])
-            avg_br = np.mean([w['breathing_rate'] for w in subset])
-            print(f"    {label_name:12s}: {count:4d} windows | "
-                  f"HR={avg_hr:.0f} bpm, HRV={avg_hrv:.0f} ms, "
-                  f"EDA={avg_eda:.1f} µS, BR={avg_br:.0f} bpm")
 
     return X, Y
 
@@ -382,45 +467,75 @@ def train_from_wesad(
     X_train, X_val = X_aug[:split], X_aug[split:]
     Y_train, Y_val = Y_aug[:split], Y_aug[split:]
 
-    # Train
+    # Train from scratch — do NOT load existing checkpoint, as architecture
+    # has changed (2->16->2 to 2->32->16->2) and old weights had collapsed
+    # targets (HRV_MAX was 100, clipping all WESAD RMSSD values to a constant)
     model = WiFiCalibrationModel()
+    print(f"  Training from scratch (new architecture with input normalization)")
 
-    # Try loading existing model as starting point
-    if os.path.exists(output):
-        try:
-            model.load_state_dict(torch.load(output, weights_only=True))
-            print(f"  Fine-tuning from existing: {output}")
-        except Exception:
-            print(f"  Training from scratch")
+    # Normalize targets to comparable scales so MSE loss weighs HRV and EDA
+    # equally (HRV range ~10-250 vs EDA range ~0.5-20 would dominate loss otherwise)
+    hrv_mean, hrv_std = Y_train[:, 0].mean(), Y_train[:, 0].std()
+    eda_mean, eda_std = Y_train[:, 1].mean(), Y_train[:, 1].std()
+    print(f"  Target stats: HRV mean={hrv_mean:.1f} std={hrv_std:.1f}, "
+          f"EDA mean={eda_mean:.1f} std={eda_std:.1f}")
 
-    optimizer = optim.Adam(model.parameters(), lr=lr)
+    optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=50, factor=0.5)
     criterion = nn.MSELoss()
+
+    # Scale loss by inverse variance so HRV and EDA contribute equally
+    hrv_weight = 1.0 / (hrv_std ** 2 + 1e-6)
+    eda_weight = 1.0 / (eda_std ** 2 + 1e-6)
+    # Normalize so they sum to 2
+    total = hrv_weight + eda_weight
+    hrv_weight = 2.0 * hrv_weight / total
+    eda_weight = 2.0 * eda_weight / total
+    print(f"  Loss weights: HRV={hrv_weight:.4f}, EDA={eda_weight:.4f}")
 
     print(f"\n  Training for {epochs} epochs...")
     best_val_loss = float('inf')
     best_state = None
+    patience_counter = 0
 
     model.train()
     for epoch in range(epochs):
         # Training
         optimizer.zero_grad()
         pred = model(X_train)
-        loss = criterion(pred, Y_train)
+        # Weighted MSE: balance HRV and EDA contributions
+        hrv_loss = ((pred[:, 0] - Y_train[:, 0]) ** 2).mean() * hrv_weight
+        eda_loss = ((pred[:, 1] - Y_train[:, 1]) ** 2).mean() * eda_weight
+        loss = hrv_loss + eda_loss
         loss.backward()
         optimizer.step()
 
         # Validation
         with torch.no_grad():
             val_pred = model(X_val)
-            val_loss = criterion(val_pred, Y_val)
+            val_hrv_loss = ((val_pred[:, 0] - Y_val[:, 0]) ** 2).mean() * hrv_weight
+            val_eda_loss = ((val_pred[:, 1] - Y_val[:, 1]) ** 2).mean() * eda_weight
+            val_loss = val_hrv_loss + val_eda_loss
+
+        scheduler.step(val_loss)
 
         if val_loss.item() < best_val_loss:
             best_val_loss = val_loss.item()
             best_state = {k: v.clone() for k, v in model.state_dict().items()}
+            patience_counter = 0
+        else:
+            patience_counter += 1
+
+        # Early stopping
+        if patience_counter > 150:
+            print(f"    Early stopping at epoch {epoch+1}")
+            break
 
         if (epoch + 1) % max(1, epochs // 5) == 0:
+            current_lr = optimizer.param_groups[0]['lr']
             print(f"    Epoch {epoch+1}/{epochs} | "
-                  f"train_loss={loss.item():.4f} | val_loss={val_loss.item():.4f}")
+                  f"train_loss={loss.item():.4f} (HRV={hrv_loss.item():.2f}, EDA={eda_loss.item():.2f}) | "
+                  f"val_loss={val_loss.item():.4f} | lr={current_lr:.6f}")
 
     # Load best model
     if best_state:
