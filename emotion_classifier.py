@@ -380,6 +380,225 @@ class FusionHead(nn.Module):
         return FAMILY_NAMES.index(family_name)
 
 
+class AttentionFusionHead(FusionHead):
+    """
+    Cross-modal attention fusion head.
+
+    Instead of concatenating modalities equally, uses multi-head cross-attention
+    where text is the query and biometric/pose signals are keys/values.
+    This lets the model learn which modality matters most per emotion context.
+
+    When non-text modalities are absent, they are masked out of the attention
+    computation. When ALL non-text modalities are absent, falls back to a
+    text-only projection path (skipping attention entirely).
+
+    Connected to:
+    - Neural Workflow AI Engine
+    - ML Training & Prediction Systems
+    - Biometric Integration Engine
+    - Real-time Dashboard Data
+    """
+
+    def __init__(
+        self,
+        text_dim: int = 384,
+        biometric_dim: int = 16,
+        pose_dim: int = 16,
+        hidden_dim: int = 128,
+        num_emotions: int = 32,
+        num_families: int = 9,
+        dropout: float = 0.3,
+        num_heads: int = 4
+    ):
+        # Initialize parent (keeps backward compat layers)
+        super().__init__(
+            text_dim=text_dim,
+            biometric_dim=biometric_dim,
+            pose_dim=pose_dim,
+            hidden_dim=hidden_dim,
+            num_emotions=num_emotions,
+            num_families=num_families,
+            dropout=dropout,
+        )
+        self.hidden_dim = hidden_dim
+        self.num_heads = num_heads
+
+        # Modality projections to shared hidden_dim space
+        self.text_proj = nn.Linear(text_dim, hidden_dim)
+        self.bio_proj = nn.Linear(biometric_dim, hidden_dim)
+        self.pose_proj = nn.Linear(pose_dim, hidden_dim)
+
+        # Multi-head cross-attention: text=query, bio+pose=key/value
+        self.cross_attention = nn.MultiheadAttention(
+            embed_dim=hidden_dim,
+            num_heads=num_heads,
+            dropout=dropout,
+            batch_first=True,
+        )
+
+        # Post-attention layers
+        self.post_attn = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.ReLU(),
+        )
+
+        # Override parent classifiers with new dimensions
+        self.family_classifier = nn.Linear(hidden_dim // 2, num_families)
+        self.emotion_classifier = nn.Linear(hidden_dim // 2, num_emotions)
+
+        # Store last attention weights for modality weight extraction
+        self._last_attn_weights = None
+        self._last_modality_mask = None  # tracks which modalities were present
+
+    def forward(
+        self,
+        text_embedding: torch.Tensor,
+        biometric_embedding: torch.Tensor = None,
+        pose_embedding: torch.Tensor = None
+    ) -> tuple:
+        """
+        Forward pass with cross-modal attention.
+
+        Returns:
+            (emotion_probs, family_probs) — both softmaxed
+        """
+        batch_size = text_embedding.shape[0]
+
+        # Project text to shared space
+        text_proj = self.text_proj(text_embedding)  # (B, hidden_dim)
+
+        # Check which non-text modalities are present
+        has_bio = biometric_embedding is not None
+        has_pose = pose_embedding is not None and self.pose_dim > 0
+
+        if not has_bio and not has_pose:
+            # Text-only path: skip attention, use text projection directly
+            # Residual: text_proj + text_proj (identity residual)
+            features = self.post_attn(text_proj)
+            self._last_attn_weights = None
+            self._last_modality_mask = (True, False, False)
+        else:
+            # Build key/value sequences from available modalities
+            kv_parts = []
+            modality_order = []  # track which modality each position corresponds to
+
+            if has_bio:
+                bio_proj = self.bio_proj(biometric_embedding)  # (B, hidden_dim)
+                kv_parts.append(bio_proj.unsqueeze(1))  # (B, 1, hidden_dim)
+                modality_order.append('bio')
+
+            if has_pose:
+                pose_proj = self.pose_proj(pose_embedding)  # (B, hidden_dim)
+                kv_parts.append(pose_proj.unsqueeze(1))  # (B, 1, hidden_dim)
+                modality_order.append('pose')
+
+            # Stack key/value: (B, num_kv, hidden_dim)
+            kv = torch.cat(kv_parts, dim=1)
+
+            # Query is text: (B, 1, hidden_dim)
+            query = text_proj.unsqueeze(1)
+
+            # Cross-attention
+            attended, attn_weights = self.cross_attention(
+                query, kv, kv, need_weights=True
+            )
+            # attended: (B, 1, hidden_dim), attn_weights: (B, 1, num_kv)
+
+            self._last_attn_weights = attn_weights.detach()
+            self._last_modality_mask = (True, has_bio, has_pose)
+
+            # Residual connection: attended + text_proj
+            fused = attended.squeeze(1) + text_proj  # (B, hidden_dim)
+
+            features = self.post_attn(fused)
+
+        emotion_logits = self.emotion_classifier(features)
+        family_logits = self.family_classifier(features)
+
+        emotion_probs = torch.softmax(emotion_logits, dim=-1)
+        family_probs = torch.softmax(family_logits, dim=-1)
+
+        return emotion_probs, family_probs
+
+    def classify_with_fallback(
+        self,
+        text_embedding: torch.Tensor,
+        biometric_embedding: torch.Tensor = None,
+        pose_embedding: torch.Tensor = None,
+        threshold: float = 0.6
+    ) -> dict:
+        """
+        Two-stage classification with confidence fallback and modality weights.
+
+        Extends parent classify_with_fallback with modality_weights info.
+        """
+        # Run forward to populate _last_attn_weights
+        result = super().classify_with_fallback(
+            text_embedding, biometric_embedding, pose_embedding, threshold
+        )
+
+        # Add modality weights
+        result['modality_weights'] = self._get_modality_weights()
+
+        return result
+
+    def _get_modality_weights(self) -> dict:
+        """
+        Extract normalized modality contributions from last attention pass.
+
+        Text weight = 1 - sum(other weights).
+        When text-only (no attention), text=1.0, others=0.0.
+        """
+        has_text, has_bio, has_pose = self._last_modality_mask or (True, False, False)
+
+        if self._last_attn_weights is None:
+            # Text-only path was used
+            return {'text': 1.0, 'bio': 0.0, 'pose': 0.0}
+
+        # attn_weights shape: (B, 1, num_kv) — take first batch item
+        weights = self._last_attn_weights[0, 0]  # (num_kv,)
+
+        bio_weight = 0.0
+        pose_weight = 0.0
+        idx = 0
+
+        if has_bio:
+            bio_weight = float(weights[idx])
+            idx += 1
+        if has_pose:
+            pose_weight = float(weights[idx])
+            idx += 1
+
+        # Normalize: attention weights over non-text modalities represent
+        # how much the model attends to them. Text contribution is the residual.
+        # Scale so total = 1.0
+        other_total = bio_weight + pose_weight
+        # The residual connection means text always contributes.
+        # We model text weight as complementary to attention weights.
+        # Attention weights already sum to 1 over KV positions, so we scale:
+        # text gets at least 50% (residual), rest split by attention
+        text_weight = 0.5
+        bio_weight = 0.5 * bio_weight / (other_total + 1e-8) * other_total
+        pose_weight = 0.5 * pose_weight / (other_total + 1e-8) * other_total
+
+        # Simplify: text=0.5, bio and pose share the other 0.5
+        # proportional to attention weights
+        if other_total > 1e-8:
+            bio_weight = 0.5 * (bio_weight / other_total) if has_bio else 0.0
+            pose_weight = 0.5 * (pose_weight / other_total) if has_pose else 0.0
+        else:
+            bio_weight = 0.0
+            pose_weight = 0.0
+
+        text_weight = 1.0 - bio_weight - pose_weight
+
+        return {
+            'text': round(text_weight, 6),
+            'bio': round(bio_weight, 6),
+            'pose': round(pose_weight, 6),
+        }
+
+
 class MultimodalEmotionAnalyzer:
     """
     Main interface for multimodal emotion analysis.
@@ -438,18 +657,36 @@ class MultimodalEmotionAnalyzer:
             pass
 
         # Load or create fusion head (32 emotions, 9 families)
+        # Default to AttentionFusionHead (v2); fall back to FusionHead (v1) for old checkpoints
         pose_dim = 16 if self.pose_encoder else 0
-        self.fusion_head = FusionHead(
-            text_dim=self.n_embd,
-            biometric_dim=16,
-            pose_dim=pose_dim,
-            num_emotions=32,
-            num_families=9
-        )
 
+        # Detect checkpoint version to choose correct head class
+        fusion_version = 2  # default to AttentionFusionHead
         if classifier_checkpoint and Path(classifier_checkpoint).exists():
             state = torch.load(classifier_checkpoint, map_location=self.device, weights_only=False)
+            meta = state.get('meta', {})
+            fusion_version = meta.get('fusion_version', 1)  # old checkpoints are v1
+        else:
+            state = None
 
+        if fusion_version >= 2:
+            self.fusion_head = AttentionFusionHead(
+                text_dim=self.n_embd,
+                biometric_dim=16,
+                pose_dim=pose_dim,
+                num_emotions=32,
+                num_families=9
+            )
+        else:
+            self.fusion_head = FusionHead(
+                text_dim=self.n_embd,
+                biometric_dim=16,
+                pose_dim=pose_dim,
+                num_emotions=32,
+                num_families=9
+            )
+
+        if state is not None:
             # Determine pose_dim from checkpoint meta or by inspecting shapes
             meta = state.get('meta', {})
             saved_pose_dim = meta.get('pose_dim', None)
@@ -545,7 +782,7 @@ class MultimodalEmotionAnalyzer:
         self.n_embd = 64
 
         # Adjust fusion head for smaller embedding
-        self.fusion_head = FusionHead(
+        self.fusion_head = AttentionFusionHead(
             text_dim=64,
             biometric_dim=16,
             pose_dim=0,
@@ -653,6 +890,10 @@ class MultimodalEmotionAnalyzer:
             'latency_ms': round(latency_ms, 2),
             'status': 'success'
         }
+
+        # Include modality weights if available (AttentionFusionHead)
+        if 'modality_weights' in classification:
+            result['modality_weights'] = classification['modality_weights']
 
         if return_embedding:
             result['embedding'] = text_embedding.squeeze(0).cpu().numpy().tolist()

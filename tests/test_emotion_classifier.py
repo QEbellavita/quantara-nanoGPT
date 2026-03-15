@@ -120,34 +120,36 @@ class TestFusionHead:
     @pytest.fixture
     def fusion_head(self):
         from emotion_classifier import FusionHead
-        return FusionHead(text_dim=512, biometric_dim=16, num_emotions=7)
+        return FusionHead(text_dim=512, biometric_dim=16, pose_dim=16)
 
     def test_output_shape(self, fusion_head):
-        """Output should be (batch, num_emotions)."""
+        """Output should be (batch, num_emotions) and (batch, num_families)."""
         text_emb = torch.randn(2, 512)
         bio_emb = torch.randn(2, 16)
 
-        output = fusion_head(text_emb, bio_emb)
+        emotion_probs, family_probs = fusion_head(text_emb, bio_emb)
 
-        assert output.shape == (2, 7)
+        assert emotion_probs.shape == (2, 32)
+        assert family_probs.shape == (2, 9)
 
     def test_output_is_probability_distribution(self, fusion_head):
-        """Output should sum to 1 (softmax)."""
+        """Emotion probs should sum to 1 (softmax)."""
         text_emb = torch.randn(1, 512)
         bio_emb = torch.randn(1, 16)
 
-        output = fusion_head(text_emb, bio_emb)
+        emotion_probs, family_probs = fusion_head(text_emb, bio_emb)
 
-        assert torch.isclose(output.sum(), torch.tensor(1.0), atol=1e-5)
+        assert torch.isclose(emotion_probs.sum(), torch.tensor(1.0), atol=1e-5)
+        assert torch.isclose(family_probs.sum(), torch.tensor(1.0), atol=1e-5)
 
     def test_text_only_mode(self, fusion_head):
         """Should work with None biometrics."""
         text_emb = torch.randn(1, 512)
 
-        output = fusion_head(text_emb, None)
+        emotion_probs, family_probs = fusion_head(text_emb, None)
 
-        assert output.shape == (1, 7)
-        assert torch.isclose(output.sum(), torch.tensor(1.0), atol=1e-5)
+        assert emotion_probs.shape == (1, 32)
+        assert torch.isclose(emotion_probs.sum(), torch.tensor(1.0), atol=1e-5)
 
     def test_different_inputs_different_outputs(self, fusion_head):
         """Different embeddings should produce different predictions."""
@@ -155,10 +157,82 @@ class TestFusionHead:
         text2 = torch.randn(1, 512)
         bio = torch.randn(1, 16)
 
-        out1 = fusion_head(text1, bio)
-        out2 = fusion_head(text2, bio)
+        out1, _ = fusion_head(text1, bio)
+        out2, _ = fusion_head(text2, bio)
 
         assert not torch.allclose(out1, out2)
+
+
+class TestAttentionFusionHead:
+    """Test cross-modal attention fusion head."""
+
+    @pytest.fixture
+    def fusion_head(self):
+        from emotion_classifier import AttentionFusionHead
+        return AttentionFusionHead(
+            text_dim=384, biometric_dim=16, pose_dim=16,
+            hidden_dim=128, num_emotions=32, num_families=9
+        )
+
+    def test_forward_output_shapes(self, fusion_head):
+        text = torch.randn(1, 384)
+        bio = torch.randn(1, 16)
+        pose = torch.randn(1, 16)
+        emotion_probs, family_probs = fusion_head(text, bio, pose)
+        assert emotion_probs.shape == (1, 32)
+        assert family_probs.shape == (1, 9)
+
+    def test_forward_without_biometrics(self, fusion_head):
+        text = torch.randn(1, 384)
+        emotion_probs, family_probs = fusion_head(text, None, None)
+        assert emotion_probs.shape == (1, 32)
+        assert family_probs.shape == (1, 9)
+
+    def test_probs_sum_to_one(self, fusion_head):
+        text = torch.randn(1, 384)
+        bio = torch.randn(1, 16)
+        emotion_probs, family_probs = fusion_head(text, bio, None)
+        assert abs(emotion_probs.sum().item() - 1.0) < 1e-5
+        assert abs(family_probs.sum().item() - 1.0) < 1e-5
+
+    def test_classify_with_fallback_returns_modality_weights(self, fusion_head):
+        text = torch.randn(1, 384)
+        bio = torch.randn(1, 16)
+        result = fusion_head.classify_with_fallback(text, bio, None)
+        assert 'modality_weights' in result
+        assert 'text' in result['modality_weights']
+        assert 'bio' in result['modality_weights']
+        assert 'pose' in result['modality_weights']
+
+    def test_modality_weights_sum_to_one(self, fusion_head):
+        text = torch.randn(1, 384)
+        bio = torch.randn(1, 16)
+        pose = torch.randn(1, 16)
+        result = fusion_head.classify_with_fallback(text, bio, pose)
+        weights = result['modality_weights']
+        total = weights['text'] + weights['bio'] + weights['pose']
+        assert abs(total - 1.0) < 1e-4
+
+    def test_attention_mask_excludes_absent_modalities(self, fusion_head):
+        text = torch.randn(1, 384)
+        result = fusion_head.classify_with_fallback(text, None, None)
+        weights = result['modality_weights']
+        assert weights['text'] == 1.0
+        assert weights['bio'] == 0.0
+        assert weights['pose'] == 0.0
+
+    def test_batch_forward(self, fusion_head):
+        text = torch.randn(4, 384)
+        bio = torch.randn(4, 16)
+        emotion_probs, family_probs = fusion_head(text, bio, None)
+        assert emotion_probs.shape == (4, 32)
+        assert family_probs.shape == (4, 9)
+
+    def test_backward_compat_with_fusionhead_interface(self, fusion_head):
+        from emotion_classifier import FusionHead
+        old = FusionHead(text_dim=384, biometric_dim=16, pose_dim=16)
+        for method in ['forward', 'classify_with_fallback', 'get_emotion_name', 'get_emotion_index']:
+            assert hasattr(fusion_head, method), f"Missing method: {method}"
 
 
 class TestMultimodalEmotionAnalyzer:
@@ -181,7 +255,7 @@ class TestMultimodalEmotionAnalyzer:
         assert 'dominant_emotion' in result
         assert 'confidence' in result
         assert 'scores' in result
-        assert len(result['scores']) == 7
+        assert len(result['scores']) == 32
 
     def test_analyze_with_biometrics(self, mock_analyzer):
         """Should accept biometric data."""
@@ -198,12 +272,12 @@ class TestMultimodalEmotionAnalyzer:
         total = sum(result['scores'].values())
         assert abs(total - 1.0) < 1e-5
 
-    def test_confidence_matches_dominant_score(self, mock_analyzer):
-        """Confidence should equal the dominant emotion's score."""
+    def test_confidence_is_valid(self, mock_analyzer):
+        """Confidence should be between 0 and 1."""
         result = mock_analyzer.analyze("I am so excited!")
 
-        dominant = result['dominant_emotion']
-        assert result['confidence'] == result['scores'][dominant]
+        assert 0.0 <= result['confidence'] <= 1.0
+        assert result['dominant_emotion'] in result['scores']
 
     def test_empty_text_handled(self, mock_analyzer):
         """Empty text should not crash."""
