@@ -406,17 +406,33 @@ class EmotionGPTModel:
         return device
 
     def _init_multimodal_analyzer(self):
-        """Initialize multimodal analyzer if available"""
+        """Initialize multimodal analyzer if available.
+
+        Auto-detects GoEmotions checkpoints and uses the best available encoder:
+        GoEmotions RoBERTa (796-dim) > sentence-transformers (384-dim) > nanoGPT.
+        """
         self.multimodal_analyzer = None
         classifier_path = Path(__file__).parent / 'checkpoints' / 'emotion_fusion_head.pt'
         if HAS_MULTIMODAL and classifier_path.exists():
             try:
+                # Auto-detect if checkpoint was trained with GoEmotions
+                use_go_emotions = False
+                go_combined = True
+                state = torch.load(classifier_path, map_location='cpu', weights_only=False)
+                if state.get('embedding_type') == 'go-emotions':
+                    use_go_emotions = True
+                    go_combined = state.get('go_emotions_combined', True)
+                    print("[EmotionGPT] Detected GoEmotions checkpoint")
+
                 self.multimodal_analyzer = MultimodalEmotionAnalyzer(
                     gpt_checkpoint=self.checkpoint_path,
                     classifier_checkpoint=str(classifier_path),
-                    device=self.device
+                    device=self.device,
+                    use_go_emotions=use_go_emotions,
+                    go_emotions_combined=go_combined,
                 )
-                print("[EmotionGPT] Multimodal analyzer loaded (32 emotions)")
+                encoder_type = 'GoEmotions' if use_go_emotions else 'sentence-transformers'
+                print(f"[EmotionGPT] Multimodal analyzer loaded (32 emotions, {encoder_type})")
             except Exception as e:
                 print(f"[EmotionGPT] Multimodal analyzer failed: {e}")
 
