@@ -359,6 +359,25 @@ def create_profile_blueprint(engine) -> Blueprint:
             logger.exception("Error deleting user %s", user_id)
             return jsonify({'error': str(e)}), 500
 
+    # === Service Registration (service-key protected) =======================
+
+    @bp.route('/api/profile/services/register', methods=['POST'])
+    @require_service_key
+    def register_service():
+        data = request.get_json()
+        if not data:
+            return jsonify({'error': 'Request body required'}), 400
+        name = data.get('name')
+        url = data.get('url')
+        if not name or not url:
+            return jsonify({'error': 'name and url required'}), 400
+        if hasattr(engine, '_ecosystem_connector') and engine._ecosystem_connector:
+            success = engine._ecosystem_connector.register_service(name, url)
+            if not success:
+                return jsonify({'error': 'URL not in allowlist'}), 403
+            return jsonify({'status': 'registered', 'name': name})
+        return jsonify({'error': 'Connector not initialized'}), 503
+
     # === Ecosystem endpoints (service-key protected) =======================
 
     @bp.route('/api/profile/<user_id>/context', methods=['GET'])

@@ -925,6 +925,37 @@ def create_app(model: EmotionGPTModel) -> Flask:
             print(f"⚠ Profile engine failed to initialize: {e}")
             profile_engine = None
 
+    # Initialize event bus + ecosystem integration
+    if HAS_PROFILE_ENGINE and profile_engine:
+        try:
+            from profile_event_bus import ProfileEventBus
+            from ecosystem_connector import EcosystemConnector
+            from process_scheduler import ProcessScheduler
+
+            event_bus = ProfileEventBus()
+            ecosystem_connector = EcosystemConnector(event_bus, profile_engine.db)
+            profile_engine._ecosystem_connector = ecosystem_connector
+            profile_engine.set_event_bus(event_bus, ecosystem_connector)
+
+            process_scheduler = ProcessScheduler(
+                process_fn=profile_engine.process,
+                debounce_seconds=30, count_threshold=20, periodic_seconds=300
+            )
+            process_scheduler.start()
+
+            # WebSocket router
+            try:
+                from websocket_router import WebSocketRouter
+                # Note: socketio may already be initialized, or we create it
+                ws_router = WebSocketRouter(event_bus)
+                print("✓ WebSocket router initialized")
+            except Exception as e:
+                print(f"⚠ WebSocket router failed: {e}")
+
+            print("✓ Event bus + ecosystem connector initialized")
+        except Exception as e:
+            print(f"⚠ Event bus failed to initialize: {e}")
+
     def require_model():
         """Check if model is loaded, return error response if not"""
         if model is None:

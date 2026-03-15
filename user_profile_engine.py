@@ -53,7 +53,10 @@ class UserProfileEngine:
         # Consecutive-met counter per user for stage evaluation
         self._consecutive_met: Dict[str, int] = {}
         self._closed = False
-        self._socketio = None
+        self._event_bus = None
+        self._intelligence_publisher = None
+        self._alert_engine = None
+        self._ecosystem_connector = None
 
     # ─── Event Ingestion ─────────────────────────────────────────────────
 
@@ -256,17 +259,34 @@ class UserProfileEngine:
         # Check and create missed snapshots
         self._check_snapshots(user_id, fingerprint, new_stage, confidence)
 
-        # Emit WebSocket events if socketio is wired
-        if self._socketio is not None:
+        # Publish to event bus
+        if self._event_bus:
             try:
-                self._socketio.emit('profile_updated', {
-                    'user_id': user_id,
-                    'stage': new_stage,
-                    'confidence': round(confidence, 4),
-                    'stage_changed': stage_result['changed'],
+                self._event_bus.publish('profile.updated', {
+                    'user_id': user_id, 'confidence': confidence,
+                    'domains_changed': list(fingerprint.keys()),
                 })
-            except Exception:
-                logger.exception("Error emitting WebSocket event")
+                if stage_result['changed']:
+                    self._event_bus.publish('profile.stage.changed', {
+                        'user_id': user_id, 'old_stage': current_stage,
+                        'new_stage': new_stage, 'reason': stage_result['reason'],
+                    })
+            except Exception as e:
+                logger.warning("Bus publish failed: %s", e)
+
+        # Publish intelligence
+        if self._intelligence_publisher:
+            try:
+                self._intelligence_publisher.publish_for_user(user_id, fingerprint, new_stage, confidence)
+            except Exception as e:
+                logger.warning("Intelligence publish failed: %s", e)
+
+        # Run predictive alerts
+        if self._alert_engine:
+            try:
+                self._alert_engine.check_predictive(user_id, fingerprint)
+            except Exception as e:
+                logger.warning("Predictive alert check failed: %s", e)
 
         return fingerprint
 
@@ -332,11 +352,22 @@ class UserProfileEngine:
                 confidence=confidence,
             )
 
-    # ─── Socket.IO Integration ───────────────────────────────────────────
+    # ─── Event Bus Integration ───────────────────────────────────────────
 
-    def set_socketio(self, socketio) -> None:
-        """Wire a Flask-SocketIO (or compatible) instance for real-time events."""
-        self._socketio = socketio
+    def set_event_bus(self, bus, connector=None):
+        """Wire the event bus for real-time intelligence and alerts."""
+        self._event_bus = bus
+        self._ecosystem_connector = connector
+        try:
+            from intelligence_publisher import IntelligencePublisher
+            self._intelligence_publisher = IntelligencePublisher(bus, connector)
+        except Exception as e:
+            logger.warning("IntelligencePublisher init failed: %s", e)
+        try:
+            from alert_engine import AlertEngine
+            self._alert_engine = AlertEngine(bus, self.db)
+        except Exception as e:
+            logger.warning("AlertEngine init failed: %s", e)
 
     # ─── Query Methods ───────────────────────────────────────────────────
 
