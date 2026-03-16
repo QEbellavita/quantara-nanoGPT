@@ -67,7 +67,7 @@ def get_all(self) -> dict:
 
 ### Thread Safety
 
-All operations are protected by a single `threading.Lock`. The lock scope is minimal (dict read/write only). No I/O under the lock.
+A single `threading.Lock` protects all operations. The lock scope is minimal (dict read/write only, no I/O). Under CPython's GIL, `dict[key] += 1` is already nearly atomic for simple types, but the lock provides correctness guarantees across all Python implementations. A single lock is sufficient for 19 metrics — contention is negligible since each critical section is a single dict update (~10ns).
 
 ### Subsystem Wiring
 
@@ -75,13 +75,14 @@ Each subsystem receives the collector via a `set_metrics(collector)` method or c
 
 ---
 
-## Component 2: Metrics Points (16 total)
+## Component 2: Metrics Points (19 total)
 
 ### Event Bus (profile_event_bus.py)
 
 | Metric | Type | Where |
 |--------|------|-------|
-| `bus.publish_count` | counter | `ProfileEventBus.publish()` — after successful dispatch |
+| `bus.publish_count` | counter | `ProfileEventBus.publish()` — incremented once per publish() invocation (per event), regardless of individual subscriber success/failure |
+| `bus.publish_errors` | counter | `ProfileEventBus.publish()` — incremented in the `except Exception` block for each subscriber callback failure |
 | `bus.subscriber_count` | gauge | `ProfileEventBus.subscribe()` / `unsubscribe()` — set to current len |
 
 ### Ecosystem Connector (ecosystem_connector.py)
@@ -90,13 +91,16 @@ Each subsystem receives the collector via a `set_metrics(collector)` method or c
 |--------|------|-------|
 | `connector.delivery_count` | counter | After successful outbound webhook delivery |
 | `connector.delivery_failures` | counter | After failed delivery (before dead letter) |
-| `connector.dead_letter_count` | gauge | After `_store_dead_letter()` and `replay_dead_letters()` — set to current count |
+| `connector.dead_letter_count` | gauge | Maintained as an in-memory counter: incremented in `_store_dead_letter()`, decremented in `replay_dead_letters()` on successful replay. May drift from DB truth after external manipulation, but avoids DB reads on the hot path. |
+| `connector.inbound_dead_letters` | counter | In `route_inbound()` when event is sent to dead letter due to missing user_id or domain |
 
 ### Personalization (emotion_api_server.py analyze endpoint)
 
+Personalization metrics only count requests where `user_id` is present and `profile_engine` is available — anonymous requests are not eligible for personalization and are not counted here. Use `classifier.requests` for total analyze volume.
+
 | Metric | Type | Where |
 |--------|------|-------|
-| `personalization.requests` | counter | Every time `apply_profile_personalization()` is called |
+| `personalization.requests` | counter | Every time `apply_profile_personalization()` is called (user_id present + profile_engine available) |
 | `personalization.skipped` | counter | When `result['personalized'] is False` |
 | `personalization.consulted` | counter | When `result['personalized'] is True` and reason contains `profile_consulted` |
 | `personalization.swapped` | counter | When `result['personalized'] is True` and reason contains `profile_tiebreak` |
@@ -105,7 +109,7 @@ Each subsystem receives the collector via a `set_metrics(collector)` method or c
 
 | Metric | Type | Where |
 |--------|------|-------|
-| `classifier.requests` | counter | In `/api/emotion/analyze` after `model.analyze()` returns |
+| `classifier.requests` | counter | In `/api/emotion/analyze` after `model.analyze()` returns — counts ALL requests including anonymous |
 | `classifier.fallback_count` | counter | When `result.get('is_fallback')` is True, or when keyword fallback path is used |
 | `classifier.confidence_sum` | counter | Accumulate `result.get('confidence', 0)` — divide by requests for avg |
 
@@ -115,8 +119,8 @@ Each subsystem receives the collector via a `set_metrics(collector)` method or c
 |--------|------|-------|
 | `profile.active_snapshots` | gauge | After `_update_snapshot()` — set to `len(self._snapshots)` |
 | `profile.events_logged` | counter | In `log_event()` after successful DB write |
-| `profile.cache_hits` | counter | In `get_profile_snapshot()` when snapshot found in `_snapshots` |
-| `profile.cache_rebuilds` | counter | In `get_profile_snapshot()` when rebuilt from DB |
+| `profile.cache_hits` | counter | In `get_profile_snapshot()` when snapshot found in `_snapshots` (under lock) |
+| `profile.cache_rebuilds` | counter | In `get_profile_snapshot()` only when rebuild is actually used — inside the `if user_id not in self._snapshots` branch after DB rebuild, not when a concurrent thread already inserted |
 
 ---
 
@@ -143,8 +147,10 @@ Each subsystem receives the collector via a `set_metrics(collector)` method or c
     "uptime_seconds": 9135.2,
     "counters": {
       "bus.publish_count": 1423,
+      "bus.publish_errors": 2,
       "connector.delivery_count": 892,
       "connector.delivery_failures": 3,
+      "connector.inbound_dead_letters": 1,
       "personalization.requests": 567,
       "personalization.skipped": 412,
       "personalization.consulted": 155,
@@ -174,13 +180,13 @@ When `metrics_collector` is None (not initialized), the `metrics` key is omitted
 | File | Change | Lines (est.) |
 |------|--------|-------------|
 | `metrics_collector.py` (create) | MetricsCollector class — counters, gauges, lock, get_all() | ~70 |
-| `profile_event_bus.py` (modify) | Add `set_metrics()`, increment bus counters in publish/subscribe | ~10 |
-| `ecosystem_connector.py` (modify) | Add `set_metrics()`, increment delivery/failure counters, set dead_letter gauge | ~15 |
+| `profile_event_bus.py` (modify) | Add `set_metrics()`, increment bus counters in publish/subscribe | ~12 |
+| `ecosystem_connector.py` (modify) | Add `set_metrics()`, increment delivery/failure/inbound counters, maintain dead_letter gauge | ~18 |
 | `emotion_classifier.py` (modify) | Add `set_metrics()` to MultimodalEmotionAnalyzer, increment classifier counters in analyze() | ~10 |
 | `user_profile_engine.py` (modify) | Add `set_metrics()`, increment profile counters in log_event/get_profile_snapshot | ~15 |
-| `emotion_api_server.py` (modify) | Create MetricsCollector on startup, wire to subsystems, increment personalization counters in analyze, enrich /api/emotion/status | ~30 |
+| `emotion_api_server.py` (modify) | Create MetricsCollector on startup, wire to subsystems, increment personalization counters in analyze, enrich /api/emotion/status | ~35 |
 | `tests/test_metrics_collector.py` (create) | Counter/gauge ops, thread safety, get_all format, no-op when None | ~80 |
-| `tests/test_metrics_integration.py` (create) | Verify subsystems increment metrics after operations | ~100 |
+| `tests/test_metrics_integration.py` (create) | Verify subsystems increment metrics after operations | ~120 |
 
 **No changes to:** `profile_db.py`, `alert_engine.py`, `intelligence_publisher.py`, `websocket_router.py`.
 
@@ -190,7 +196,9 @@ When `metrics_collector` is None (not initialized), the `metrics` key is omitted
 
 1. **metrics_collector is None:** All subsystems check `if self._metrics:` before incrementing. No errors, no metrics.
 2. **Server restart:** All counters reset to 0. `server_started_at` records when.
-3. **High concurrency:** Single lock is fine — increment is a dict read/write, nanosecond-scale. No I/O under lock.
+3. **High concurrency:** Single lock with ~10ns critical sections. CPython GIL provides additional safety. No I/O under lock. 19 metrics is well within single-lock scalability.
 4. **confidence_sum overflow:** Float64 can hold ~10^308. At 1000 requests/sec for 100 years, we'd accumulate ~3*10^12. No overflow risk.
-5. **Gauge staleness:** `connector.dead_letter_count` is set after each store/replay operation. Between operations it reflects the last known value, not real-time. Acceptable — the gauge updates on every write path.
-6. **Memory:** 16 metrics = 16 dict entries. Negligible.
+5. **Dead letter gauge drift:** The `connector.dead_letter_count` gauge is maintained in-memory (increment on store, decrement on successful replay) to avoid DB reads on the hot path. It may drift from DB truth if dead letters are manipulated externally — acceptable tradeoff.
+6. **Cache rebuild double-count:** `profile.cache_rebuilds` is only incremented inside the `if user_id not in self._snapshots` branch, so concurrent rebuilds for the same user correctly count only the one that wins the race.
+7. **Anonymous requests:** `personalization.requests` only counts personalization-eligible requests (user_id present). `classifier.requests` counts all analyze calls. These are intentionally different denominators.
+8. **Memory:** 19 metrics = 19 dict entries. Negligible.
