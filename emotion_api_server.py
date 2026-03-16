@@ -73,7 +73,7 @@ except ImportError:
     print("[!] Flask not installed. Run: pip install flask flask-cors")
 
 try:
-    from emotion_classifier import MultimodalEmotionAnalyzer, EMOTION_FAMILIES, FAMILY_NAMES
+    from emotion_classifier import MultimodalEmotionAnalyzer, EMOTION_FAMILIES, FAMILY_NAMES, apply_profile_personalization
     HAS_MULTIMODAL = True
 except ImportError:
     HAS_MULTIMODAL = False
@@ -1075,11 +1075,13 @@ def create_app(model: EmotionGPTModel) -> Flask:
                     pass
 
             # Log to profile engine
-            if profile_engine:
+            # NOTE: Intentionally removed the 'default' user_id fallback that was
+            # here. Using 'default' created a ghost user that accumulated all
+            # anonymous requests, polluting profile data.
+            if profile_engine and user_id:
                 try:
-                    user_id = data.get('user_id', 'default')
                     profile_engine.log_event(user_id, 'emotional', 'emotion_classified', {
-                        'emotion': result.get('emotion', 'neutral'),
+                        'emotion': result.get('dominant_emotion', result.get('emotion', 'neutral')),
                         'family': result.get('family', 'Neutral'),
                         'confidence': result.get('confidence', 0.5),
                     }, 'nanogpt', result.get('confidence'))
@@ -1090,6 +1092,51 @@ def create_app(model: EmotionGPTModel) -> Flask:
                     profile_engine.log_event(user_id, 'temporal', 'session_started', {
                         'endpoint': 'analyze',
                     }, 'nanogpt')
+                except Exception:
+                    pass
+
+            # Apply profile personalization when user_id is present
+            snapshot = None
+            if user_id and profile_engine:
+                try:
+                    snapshot = profile_engine.get_profile_snapshot(user_id)
+                    apply_profile_personalization(result, snapshot)
+
+                    # Publish event bus event on tiebreak swap
+                    if (result.get('personalized') and
+                            'profile_tiebreak' in result.get('personalization_reason', '') and
+                            profile_engine._event_bus):
+                        try:
+                            profile_engine._event_bus.publish('profile.personalization.applied', {
+                                'user_id': user_id,
+                                'personalized_family': result.get('family'),
+                                'reason': result.get('personalization_reason'),
+                            })
+                        except Exception:
+                            pass
+                except Exception:
+                    result['personalized'] = False
+            elif user_id and not profile_engine:
+                result['personalized'] = False
+
+            # Opt-in profile context enrichment (reuses snapshot from above)
+            include_profile = data.get('include_profile', False)
+            if include_profile and user_id and profile_engine:
+                try:
+                    if snapshot is None:
+                        snapshot = profile_engine.get_profile_snapshot(user_id)
+                    if snapshot:
+                        from datetime import datetime, timezone
+                        result['profile_context'] = {
+                            'evolution_stage': snapshot.evolution_stage,
+                            'overall_confidence': snapshot.overall_confidence,
+                            'dominant_family': snapshot.dominant_family,
+                            'emotion_prior': snapshot.emotion_prior,
+                            'event_count': snapshot.event_count,
+                            'last_updated': datetime.fromtimestamp(
+                                snapshot.last_updated, tz=timezone.utc
+                            ).isoformat(),
+                        }
                 except Exception:
                     pass
 
