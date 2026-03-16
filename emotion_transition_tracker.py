@@ -32,7 +32,7 @@ import os
 import threading
 import time
 from collections import Counter, defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -75,7 +75,7 @@ class EmotionRecord:
         self.emotion = emotion.lower()
         self.family = family
         self.confidence = confidence
-        self.timestamp = timestamp or datetime.utcnow().isoformat()
+        self.timestamp = timestamp or datetime.now(timezone.utc).isoformat()
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -96,12 +96,16 @@ class EmotionRecord:
 
     @property
     def dt(self) -> datetime:
-        """Parse timestamp to datetime (handles both Z-suffix and plain ISO)."""
+        """Parse timestamp to timezone-aware datetime (handles both Z-suffix and plain ISO)."""
         ts = self.timestamp.replace('Z', '+00:00')
         try:
-            return datetime.fromisoformat(ts)
+            parsed = datetime.fromisoformat(ts)
+            # Ensure timezone-aware (legacy data may be naive UTC)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed
         except ValueError:
-            return datetime.utcnow()
+            return datetime.now(timezone.utc)
 
 
 # ─── Transition Tracker ─────────────────────────────────────────────────────
@@ -331,7 +335,7 @@ class EmotionTransitionTracker:
         if not history:
             return alerts
 
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
 
         # --- rapid_cycling: 3+ family changes within 30 minutes ---
         window_start = now - timedelta(minutes=self.RAPID_CYCLING_WINDOW_MIN)
@@ -536,7 +540,7 @@ class EmotionTransitionTracker:
 
         return {
             'user_id': user_id,
-            'generated_at': datetime.utcnow().isoformat(),
+            'generated_at': datetime.now(timezone.utc).isoformat(),
             'session': {
                 'first_record': session_start,
                 'last_record': session_end,
@@ -570,7 +574,7 @@ class EmotionTransitionTracker:
         history = self._history.get(user_id, [])
         if not history:
             return []
-        cutoff = datetime.utcnow() - timedelta(hours=window_hours)
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=window_hours)
         return [r for r in history if r.dt >= cutoff]
 
     def _generate_recommendations(self, alerts: List[Dict[str, Any]],
@@ -637,7 +641,7 @@ class EmotionTransitionTracker:
             path.parent.mkdir(parents=True, exist_ok=True)
             data = {
                 'user_id': user_id,
-                'updated_at': datetime.utcnow().isoformat(),
+                'updated_at': datetime.now(timezone.utc).isoformat(),
                 'records': [r.to_dict() for r in self._history.get(user_id, [])],
             }
             with open(path, 'w') as f:

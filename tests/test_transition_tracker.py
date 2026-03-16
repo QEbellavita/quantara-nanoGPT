@@ -7,7 +7,7 @@ import os
 import sys
 import tempfile
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -63,7 +63,7 @@ class TestGetTrajectory:
             persist_dir=str(tmp_path / 'transitions'),
             auto_persist=False,
         )
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         # Add records within the last 24 hours
         for i, emotion in enumerate(['joy', 'sadness', 'anger', 'calm']):
             ts = (now - timedelta(hours=4 - i)).isoformat()
@@ -118,7 +118,7 @@ class TestDetectPatternsRapidCycling:
 
     def test_rapid_cycling_detected(self, tracker):
         """3+ family changes in 30 min should trigger rapid_cycling."""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         # 4 entries alternating families within the last 10 minutes
         emotions = [
             ('joy', 'Joy'),
@@ -137,7 +137,7 @@ class TestDetectPatternsRapidCycling:
 
     def test_no_rapid_cycling_with_stable_emotions(self, tracker):
         """Same family repeatedly should NOT trigger rapid_cycling."""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         for i in range(5):
             ts = (now - timedelta(minutes=10 - i * 2)).isoformat()
             tracker.record('user1', 'joy', 'Joy', timestamp=ts)
@@ -160,7 +160,7 @@ class TestDetectPatternsNegativeSpiral:
 
     def test_negative_spiral_detected(self, tracker):
         """3 consecutive negative-family emotions should trigger negative_spiral."""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         negative_emotions = [
             ('anger', 'Anger'),
             ('fear', 'Fear'),
@@ -177,7 +177,7 @@ class TestDetectPatternsNegativeSpiral:
 
     def test_no_negative_spiral_with_positive_break(self, tracker):
         """A positive emotion breaking the streak should prevent detection."""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         emotions = [
             ('anger', 'Anger'),
             ('joy', 'Joy'),       # breaks the streak
@@ -205,7 +205,7 @@ class TestDetectPatternsEmotionalFlatline:
 
     def test_emotional_flatline_detected(self, tracker):
         """Same emotion for 2+ hours should trigger emotional_flatline."""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         # Spread 'calm' over 3 hours
         for i in range(4):
             ts = (now - timedelta(hours=3 - i)).isoformat()
@@ -218,7 +218,7 @@ class TestDetectPatternsEmotionalFlatline:
 
     def test_no_flatline_with_variety(self, tracker):
         """Different emotions should NOT trigger flatline."""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         emotions = ['joy', 'calm', 'excitement', 'hope']
         for i, emotion in enumerate(emotions):
             ts = (now - timedelta(hours=3 - i)).isoformat()
@@ -242,7 +242,7 @@ class TestDetectPatternsPositiveRecovery:
 
     def test_positive_recovery_detected(self, tracker):
         """Transition from negative family to positive should trigger positive_recovery."""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         tracker.record('user1', 'anger', 'Anger',
                        timestamp=(now - timedelta(minutes=5)).isoformat())
         tracker.record('user1', 'joy', 'Joy',
@@ -255,7 +255,7 @@ class TestDetectPatternsPositiveRecovery:
 
     def test_no_recovery_for_neutral_transition(self, tracker):
         """Negative to neutral should NOT trigger positive_recovery."""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         tracker.record('user1', 'anger', 'Anger',
                        timestamp=(now - timedelta(minutes=5)).isoformat())
         tracker.record('user1', 'neutral', 'Neutral',
@@ -276,7 +276,7 @@ class TestGetDashboardSummary:
             persist_dir=str(tmp_path / 'transitions'),
             auto_persist=False,
         )
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         for i, emotion in enumerate(['joy', 'sadness', 'calm']):
             ts = (now - timedelta(minutes=30 - i * 10)).isoformat()
             t.record('user1', emotion, timestamp=ts)
