@@ -67,6 +67,11 @@ class EcosystemConnector:
         self._db = db
         # {name: {'url': str, 'failures': int}}
         self._services: Dict[str, Dict[str, Any]] = {}
+        self._metrics = None
+
+    def set_metrics(self, collector) -> None:
+        """Wire metrics collector for observability."""
+        self._metrics = collector
 
     # ------------------------------------------------------------------
     # Inbound routing
@@ -100,6 +105,8 @@ class EcosystemConnector:
             error_msg = f"Missing required field: {missing}"
             logger.warning("EcosystemConnector.route_inbound: %s — sending to dead letter", error_msg)
             self._store_dead_letter(event_data, error_msg)
+            if self._metrics:
+                self._metrics.increment('connector.inbound_dead_letters')
             return
 
         bus_payload = {
@@ -193,6 +200,8 @@ class EcosystemConnector:
                     # Reset failures on success
                     if name in self._services:
                         self._services[name]["failures"] = 0
+                    if self._metrics:
+                        self._metrics.increment('connector.delivery_count')
                     return
                 last_exc = RuntimeError(f"HTTP {status}")
             except (URLError, OSError, RuntimeError) as exc:
@@ -211,6 +220,8 @@ class EcosystemConnector:
             last_exc,
         )
         self.record_delivery_failure(name)
+        if self._metrics:
+            self._metrics.increment('connector.delivery_failures')
 
     # ------------------------------------------------------------------
     # Service registry
@@ -310,6 +321,9 @@ class EcosystemConnector:
             wait=True,
         )
         logger.debug("EcosystemConnector: stored dead letter event error=%r", error)
+        if self._metrics:
+            self._metrics.set_gauge('connector.dead_letter_count',
+                                    self.get_dead_letter_count())
 
     def get_dead_letter_count(self) -> int:
         """
@@ -402,4 +416,7 @@ class EcosystemConnector:
         logger.info(
             "EcosystemConnector.replay_dead_letters: replayed=%d failed=%d", replayed, failed
         )
+        if self._metrics:
+            self._metrics.set_gauge('connector.dead_letter_count',
+                                    self.get_dead_letter_count())
         return {"replayed": replayed, "failed": failed}
