@@ -39,6 +39,7 @@ class EmotionGPT:
     analyzer: MultimodalEmotionAnalyzer   # or keyword fallback model
     transitions: EmotionTransitionTracker  # or None
     auto_retrain: AutoRetrainManager       # or None
+    profile_engine: UserProfileEngine      # or None
     _metrics: MetricsCollector             # or None
     _bus: ProfileEventBus                  # or None
     _check_interval: int                   # seconds between retrain checks (default 300)
@@ -46,6 +47,7 @@ class EmotionGPT:
     _last_total: float                     # counter snapshot from last check
     _last_swapped: float                   # counter snapshot from last check
     _timer: threading.Timer               # self-repeating daemon timer
+    _stopped: bool                        # flag to prevent rescheduling after shutdown
 ```
 
 ### Constructor
@@ -56,18 +58,20 @@ def __init__(
     analyzer,
     transition_tracker=None,
     auto_retrain_manager=None,
+    profile_engine=None,
     metrics=None,
     bus=None,
     check_interval=300,
 ):
 ```
 
-All parameters except `analyzer` are optional. The coordinator degrades gracefully — if transitions is None, `analyze_with_context()` skips transition recording. If metrics is None, retrain monitoring is disabled.
+All parameters except `analyzer` are optional. The coordinator degrades gracefully — if transitions is None, `analyze_with_context()` skips transition recording. If metrics is None, retrain monitoring is disabled. If profile_engine is None, personalization is skipped.
 
 ### Startup
 
 On init, if metrics and bus are both available, start the retrain monitoring timer:
 ```python
+self._stopped = False
 if self._metrics and self._bus:
     self._start_retrain_monitor()
 ```
@@ -76,7 +80,8 @@ if self._metrics and self._bus:
 
 ```python
 def shutdown(self):
-    """Cancel the retrain monitoring timer."""
+    """Cancel the retrain monitoring timer and prevent rescheduling."""
+    self._stopped = True
     if self._timer:
         self._timer.cancel()
 ```
@@ -87,19 +92,28 @@ def shutdown(self):
 
 ### How It Works
 
-A self-repeating `threading.Timer` fires every `check_interval` seconds (default 5 minutes). Each check:
+A self-repeating `threading.Timer` fires every `check_interval` seconds (default 5 minutes). Each check runs inside a try/finally to guarantee rescheduling:
 
-1. Read current `personalization.requests` and `personalization.swapped` counters from MetricsCollector
-2. Compute the **window swap rate** for this interval: `(swapped - last_swapped) / (total - last_total)` — this gives the rate for the last 5 minutes, not lifetime
+```python
+def _check_retrain_signal(self):
+    try:
+        # ... evaluation logic ...
+    except Exception:
+        logger.exception("Retrain check failed")
+    finally:
+        if not self._stopped:
+            self._schedule_next_check()
+```
+
+### Evaluation Logic (inside the try block):
+
+1. **Minimum sample guard (evaluated first, before any division):** Read `personalization.requests` and `personalization.swapped` from MetricsCollector. Compute `window_total = total - last_total`. If `window_total < 20`, skip — not enough data.
+2. Compute **window swap rate:** `window_swapped / window_total` where `window_swapped = swapped - last_swapped`
 3. Store the window rate in `_swap_windows` (keep last 3 = 15 minutes)
-4. Evaluate triggers:
-   - **Immediate threshold:** If window swap rate > 0.20 (20%), publish `retrain.recommended`
-   - **Trend detection:** If 3 consecutive windows show increasing rates AND the latest > 0.10 (10%), publish `retrain.recommended`
+4. Evaluate triggers (only one event per check — threshold takes priority):
+   - **Immediate threshold:** If window swap rate > 0.20 (20%), publish `retrain.recommended` with `trigger='threshold'`
+   - **Trend detection (only if threshold not triggered):** If 3 consecutive windows show increasing rates AND the latest > 0.10 (10%), publish `retrain.recommended` with `trigger='trend'`
 5. Save current counter values as `_last_total` / `_last_swapped` for next window
-
-### Minimum Sample Guard
-
-If fewer than 20 new personalization requests occurred in the window, skip evaluation — not enough data to draw conclusions.
 
 ### Event Payload
 
@@ -118,8 +132,8 @@ bus.publish('retrain.recommended', {
 ### Timer Lifecycle
 
 - Timer is a daemon thread (`timer.daemon = True`) — dies with the server
-- Timer reschedules itself at the end of each check
-- `shutdown()` cancels the pending timer
+- Timer reschedules itself in the `finally` block of each check
+- `shutdown()` sets `_stopped = True` and cancels the pending timer — the `_stopped` flag prevents rescheduling from a currently executing check
 - If metrics or bus is None, no timer is created
 
 ---
@@ -133,12 +147,14 @@ def analyze_with_context(
     self,
     text: str,
     biometrics: dict = None,
+    pose: dict = None,
     user_id: str = None,
     include_profile: bool = False,
+    return_embedding: bool = False,
 ) -> dict:
     """Unified emotion analysis pipeline.
 
-    1. Classify via analyzer
+    1. Classify via analyzer (forwarding all parameters)
     2. Apply personalization (if user_id and profile engine available)
     3. Record transition (if user_id and transition tracker available)
     4. Return enriched result
@@ -147,17 +163,15 @@ def analyze_with_context(
 
 **Pipeline steps:**
 
-1. `result = self.analyzer.analyze(text, biometrics)` — core classification
-2. If `user_id` and personalization is available (profile engine accessible):
-   - Fetch profile snapshot
-   - Call `apply_profile_personalization(result, snapshot)`
+1. `result = self.analyzer.analyze(text, biometrics, pose=pose, return_embedding=return_embedding)` — core classification, forwarding all analyzer parameters
+2. If `user_id` and `self.profile_engine`:
+   - `snapshot = self.profile_engine.get_profile_snapshot(user_id)`
+   - `apply_profile_personalization(result, snapshot)`
 3. If `user_id` and `self.transitions`:
-   - `self.transitions.record(user_id, result['dominant_emotion'], ...)`
+   - `self.transitions.record(user_id, result.get('dominant_emotion', result.get('emotion', 'neutral')), ...)`
 4. If `include_profile` and snapshot available:
-   - Attach `profile_context` to result
+   - Attach `profile_context` to result (same format as the API endpoint)
 5. Return result
-
-**Important:** This method accesses the profile engine through the bus's ecosystem or directly if wired. The coordinator accepts an optional `profile_engine` reference for this purpose.
 
 **Relationship to API endpoint:** The API endpoint continues to work as-is. `analyze_with_context()` is an alternative entry point for programmatic consumers. The API endpoint can optionally be refactored to delegate to it later, but that is not part of this spec.
 
@@ -167,9 +181,9 @@ def analyze_with_context(
 
 | File | Change | Lines (est.) |
 |------|--------|-------------|
-| `emotion_gpt.py` (create) | EmotionGPT class — facade refs, analyze_with_context(), retrain signal with timer | ~150 |
+| `emotion_gpt.py` (create) | EmotionGPT class — facade refs, analyze_with_context(), retrain signal with timer | ~160 |
 | `emotion_api_server.py` (modify) | Create EmotionGPT in create_app() after subsystem init, wire all refs | ~15 |
-| `tests/test_emotion_gpt.py` (create) | Facade access, pipeline, threshold trigger, trend trigger, minimum sample guard, timer lifecycle, graceful degradation | ~180 |
+| `tests/test_emotion_gpt.py` (create) | Facade access, pipeline, threshold trigger, trend trigger, minimum sample guard, timer lifecycle, shutdown, graceful degradation | ~200 |
 
 **No changes to:** `emotion_classifier.py`, `emotion_transition_tracker.py`, `auto_retrain.py`, `profile_event_bus.py`, `user_profile_engine.py`, `metrics_collector.py`.
 
@@ -177,11 +191,13 @@ def analyze_with_context(
 
 ## Edge Cases
 
-1. **No metrics/bus:** Retrain monitoring disabled. `analyze_with_context()` still works without personalization.
-2. **No transition tracker:** Pipeline skips step 3. No error.
+1. **No metrics/bus:** Retrain monitoring disabled. `analyze_with_context()` still works for classification + transitions.
+2. **No transition tracker:** Pipeline skips transition recording. No error.
 3. **No auto-retrain manager:** Coordinator holds None reference. Retrain signal is still published (consumers decide what to do).
-4. **Server restart:** Counters reset to 0. First check window has no baseline — uses 0 as `_last_total`/`_last_swapped`. First window rate may be inaccurate but self-corrects on second window.
-5. **Low traffic:** Minimum sample guard (20 requests per window) prevents false positives during quiet periods.
-6. **Timer drift:** `threading.Timer` is not perfectly periodic but 5-minute granularity makes drift irrelevant.
-7. **Retrain signal spam:** The threshold trigger can fire every 5 minutes. Consumers (auto-retrain) should implement their own cooldown (the existing auto-retrain system already has one).
-8. **Profile engine access:** `analyze_with_context()` accepts an optional `profile_engine` parameter. If not provided, personalization is skipped.
+4. **No profile engine:** Personalization skipped in `analyze_with_context()`. No error.
+5. **Server restart:** Counters reset to 0. `_last_total`/`_last_swapped` start at 0. First window may be inaccurate but self-corrects on second window.
+6. **Low traffic:** Minimum sample guard (20 requests per window) prevents false positives. Guard is checked before division to avoid divide-by-zero.
+7. **Timer drift:** `threading.Timer` is not perfectly periodic but 5-minute granularity makes drift irrelevant.
+8. **Retrain signal deduplication:** Only one `retrain.recommended` event per check cycle — threshold takes priority over trend. Consumers (auto-retrain) should implement their own cooldown (the existing auto-retrain system already has one).
+9. **Check callback exception:** try/finally ensures timer always reschedules even if the check logic raises.
+10. **Shutdown during check:** `_stopped` flag prevents rescheduling from the finally block of a currently executing check.
