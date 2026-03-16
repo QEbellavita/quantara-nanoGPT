@@ -45,3 +45,61 @@ class TestEventBusMetrics:
         from profile_event_bus import ProfileEventBus
         bus = ProfileEventBus()
         bus.publish('test', {'x': 1})
+
+
+class TestClassifierMetrics:
+
+    def test_classifier_counter_pattern(self):
+        from metrics_collector import MetricsCollector
+        m = MetricsCollector()
+        result = {'confidence': 0.85, 'is_fallback': False}
+        m.increment('classifier.requests')
+        m.increment('classifier.confidence_sum', result.get('confidence', 0))
+        if result.get('is_fallback'):
+            m.increment('classifier.fallback_count')
+        assert m.get_counter('classifier.requests') == 1
+        assert m.get_counter('classifier.confidence_sum') == 0.85
+        assert m.get_counter('classifier.fallback_count') == 0.0
+
+    def test_fallback_counted(self):
+        from metrics_collector import MetricsCollector
+        m = MetricsCollector()
+        result = {'confidence': 1.0, 'is_fallback': True}
+        m.increment('classifier.requests')
+        if result.get('is_fallback'):
+            m.increment('classifier.fallback_count')
+        assert m.get_counter('classifier.fallback_count') == 1
+
+
+class TestPersonalizationMetrics:
+
+    def test_personalization_counters(self):
+        from metrics_collector import MetricsCollector
+        m = MetricsCollector()
+        m.increment('personalization.requests')
+        m.increment('personalization.skipped')
+        assert m.get_counter('personalization.requests') == 1
+        assert m.get_counter('personalization.skipped') == 1
+
+    def test_personalization_swapped(self):
+        from metrics_collector import MetricsCollector
+        m = MetricsCollector()
+        m.increment('personalization.requests')
+        reason = 'profile_tiebreak: Fear prior 0.38 > Sadness prior 0.21'
+        if 'profile_tiebreak' in reason:
+            m.increment('personalization.swapped')
+        assert m.get_counter('personalization.swapped') == 1
+
+
+class TestStatusEndpointMetrics:
+
+    def test_metrics_block_structure(self):
+        from metrics_collector import MetricsCollector
+        m = MetricsCollector()
+        m.increment('classifier.requests', 10)
+        m.set_gauge('bus.subscriber_count', 3)
+        result = m.get_all()
+        assert 'server_started_at' in result
+        assert 'uptime_seconds' in result
+        assert result['counters']['classifier.requests'] == 10
+        assert result['gauges']['bus.subscriber_count'] == 3

@@ -78,6 +78,8 @@ try:
 except ImportError:
     HAS_MULTIMODAL = False
 
+from metrics_collector import MetricsCollector
+
 try:
     from external_context import ExternalContextProvider
     HAS_EXTERNAL_CONTEXT = True
@@ -956,6 +958,17 @@ def create_app(model: EmotionGPTModel) -> Flask:
         except Exception as e:
             print(f"⚠ Event bus failed to initialize: {e}")
 
+    # Initialize metrics collector
+    metrics_collector = MetricsCollector()
+
+    # Wire metrics to subsystems
+    if profile_engine:
+        profile_engine.set_metrics(metrics_collector)
+    if profile_engine and profile_engine._event_bus:
+        profile_engine._event_bus.set_metrics(metrics_collector)
+    if profile_engine and profile_engine._ecosystem_connector:
+        profile_engine._ecosystem_connector.set_metrics(metrics_collector)
+
     def require_model():
         """Check if model is loaded, return error response if not"""
         if model is None:
@@ -969,7 +982,7 @@ def create_app(model: EmotionGPTModel) -> Flask:
     @app.route('/api/emotion/status', methods=['GET'])
     def status():
         """Health check endpoint"""
-        return jsonify({
+        resp = {
             'status': 'online' if model else 'degraded',
             'model': 'quantara-emotion-gpt',
             'device': model.device if model else 'none',
@@ -982,7 +995,10 @@ def create_app(model: EmotionGPTModel) -> Flask:
                 'nutrition': bool(os.environ.get('NUTRITIONIX_APP_ID')),
                 'sentiment': bool(os.environ.get('NLPCLOUD_API_KEY')),
             }
-        })
+        }
+        if metrics_collector:
+            resp['metrics'] = metrics_collector.get_all()
+        return jsonify(resp)
 
     @app.route('/api/emotion/emotions', methods=['GET'])
     def list_emotions():
@@ -1053,6 +1069,13 @@ def create_app(model: EmotionGPTModel) -> Flask:
             biometrics = data.get('biometrics')
             result = model.analyze(text, biometrics)
 
+            # Classifier metrics
+            metrics_collector.increment('classifier.requests')
+            metrics_collector.increment('classifier.confidence_sum',
+                                       float(result.get('confidence', 0)))
+            if result.get('is_fallback'):
+                metrics_collector.increment('classifier.fallback_count')
+
             # Stream emotion update via WebSocket
             if HAS_WEBSOCKET:
                 try:
@@ -1118,6 +1141,18 @@ def create_app(model: EmotionGPTModel) -> Flask:
                     result['personalized'] = False
             elif user_id and not profile_engine:
                 result['personalized'] = False
+
+            # Personalization metrics
+            if user_id and profile_engine:
+                metrics_collector.increment('personalization.requests')
+                if result.get('personalized'):
+                    reason = result.get('personalization_reason', '')
+                    if 'profile_tiebreak' in reason:
+                        metrics_collector.increment('personalization.swapped')
+                    else:
+                        metrics_collector.increment('personalization.consulted')
+                else:
+                    metrics_collector.increment('personalization.skipped')
 
             # Opt-in profile context enrichment (reuses snapshot from above)
             include_profile = data.get('include_profile', False)
