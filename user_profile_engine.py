@@ -13,6 +13,7 @@ Integrates with:
 ===============================================================================
 """
 
+import dataclasses
 import json
 import logging
 import threading
@@ -32,6 +33,22 @@ _RATE_LIMITED_EVENTS = frozenset({
 })
 
 _SECONDS_PER_WEEK = 7 * 24 * 3600
+
+
+@dataclasses.dataclass
+class ProfileSnapshot:
+    """Lightweight in-memory summary of a user's emotional profile.
+    Updated incrementally on every emotion_classified event.
+    Used by the personalization tiebreaker in emotion_classifier.py.
+    """
+    user_id: str
+    evolution_stage: int
+    overall_confidence: float
+    emotion_prior: Dict[str, float]
+    dominant_family: str
+    event_count: int
+    family_counts: Dict[str, int]
+    last_updated: float
 
 
 class UserProfileEngine:
@@ -57,6 +74,8 @@ class UserProfileEngine:
         self._intelligence_publisher = None
         self._alert_engine = None
         self._ecosystem_connector = None
+        self._snapshots: Dict[str, 'ProfileSnapshot'] = {}
+        self._snapshot_lock = threading.Lock()
 
     # ─── Event Ingestion ─────────────────────────────────────────────────
 
@@ -100,10 +119,100 @@ class UserProfileEngine:
                 source=source,
                 confidence=confidence if confidence is not None else 1.0,
             )
+            # Update in-memory snapshot for personalization
+            if domain == 'emotional' and event_type == 'emotion_classified':
+                family = (payload or {}).get('family')
+                if family:
+                    self._update_snapshot(user_id, family)
             return event_id
         except Exception:
             logger.exception("Error logging event for user %s", user_id)
             return None
+
+    def _update_snapshot(self, user_id: str, family: str) -> None:
+        """Incrementally update the in-memory profile snapshot."""
+        profile_data = None
+        with self._snapshot_lock:
+            snap = self._snapshots.get(user_id)
+            if snap is not None:
+                snap.family_counts[family] = snap.family_counts.get(family, 0) + 1
+                snap.event_count += 1
+                total = sum(snap.family_counts.values())
+                snap.emotion_prior = {f: c / total for f, c in snap.family_counts.items()}
+                snap.dominant_family = max(snap.family_counts, key=snap.family_counts.get)
+                snap.last_updated = time.time()
+                return
+
+        # Slow path: create new snapshot (outside lock)
+        profile_data = self.db.get_or_create_profile(user_id)
+        with self._snapshot_lock:
+            if user_id in self._snapshots:
+                snap = self._snapshots[user_id]
+                snap.family_counts[family] = snap.family_counts.get(family, 0) + 1
+                snap.event_count += 1
+                total = sum(snap.family_counts.values())
+                snap.emotion_prior = {f: c / total for f, c in snap.family_counts.items()}
+                snap.dominant_family = max(snap.family_counts, key=snap.family_counts.get)
+                snap.last_updated = time.time()
+                return
+            snap = ProfileSnapshot(
+                user_id=user_id,
+                evolution_stage=profile_data.get('evolution_stage', 1),
+                overall_confidence=profile_data.get('confidence', 0.0),
+                emotion_prior={family: 1.0},
+                dominant_family=family,
+                event_count=1,
+                family_counts={family: 1},
+                last_updated=time.time(),
+            )
+            self._snapshots[user_id] = snap
+
+    def get_profile_snapshot(self, user_id: str) -> Optional['ProfileSnapshot']:
+        """Return the cached profile snapshot, rebuilding from DB if needed.
+        Returns None only if user has zero emotional events.
+        Does NOT conflict with get_snapshot() which returns DB snapshots.
+        """
+        with self._snapshot_lock:
+            snap = self._snapshots.get(user_id)
+            if snap is not None:
+                return snap
+
+        # Rebuild from DB outside the lock
+        events = self.db.get_events(user_id, domain='emotional', limit=10000)
+        family_counts: Dict[str, int] = {}
+        for evt in events:
+            if evt.get('event_type') != 'emotion_classified':
+                continue
+            payload = evt.get('payload')
+            if isinstance(payload, str):
+                try:
+                    payload = json.loads(payload)
+                except (json.JSONDecodeError, TypeError):
+                    continue
+            family = (payload or {}).get('family')
+            if family:
+                family_counts[family] = family_counts.get(family, 0) + 1
+
+        if not family_counts:
+            return None
+
+        total = sum(family_counts.values())
+        profile = self.db.get_or_create_profile(user_id)
+        snap = ProfileSnapshot(
+            user_id=user_id,
+            evolution_stage=profile.get('evolution_stage', 1),
+            overall_confidence=profile.get('confidence', 0.0),
+            emotion_prior={f: c / total for f, c in family_counts.items()},
+            dominant_family=max(family_counts, key=family_counts.get),
+            event_count=total,
+            family_counts=family_counts,
+            last_updated=time.time(),
+        )
+
+        with self._snapshot_lock:
+            if user_id not in self._snapshots:
+                self._snapshots[user_id] = snap
+            return self._snapshots[user_id]
 
     # ─── Core Processing ─────────────────────────────────────────────────
 
@@ -458,6 +567,8 @@ class UserProfileEngine:
                 del self._rate_cache[k]
         # Clear consecutive met counter
         self._consecutive_met.pop(user_id, None)
+        with self._snapshot_lock:
+            self._snapshots.pop(user_id, None)
 
     # ─── Lifecycle ───────────────────────────────────────────────────────
 
