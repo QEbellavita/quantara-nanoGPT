@@ -69,6 +69,89 @@ def family_for_emotion(emotion: str) -> str:
     return _EMOTION_TO_FAMILY.get(emotion.lower(), 'Neutral')
 
 
+# ─── Profile Personalization ──────────────────────────────────────────────────
+
+PRIOR_WEIGHT = 0.05
+
+
+def apply_profile_personalization(result, snapshot):
+    """Apply profile-based personalization to emotion classification result.
+
+    Only intervenes when the classifier is uncertain (ambiguous).
+    Modifies result in-place and returns it.
+    Pure function — no side effects, no DB calls, no event bus publish.
+
+    Args:
+        result: dict from MultimodalEmotionAnalyzer.analyze() or keyword fallback
+        snapshot: Optional ProfileSnapshot from UserProfileEngine.get_profile_snapshot()
+    """
+    # Guard 1: no snapshot or cold start
+    if snapshot is None or snapshot.event_count < 10:
+        result['personalized'] = False
+        return result
+
+    # Guard 2: no family_scores (fallback classifier)
+    if 'family_scores' not in result:
+        result['personalized'] = False
+        return result
+
+    family_scores = result['family_scores']
+
+    # Extract top-2 families
+    sorted_families = sorted(family_scores.items(), key=lambda x: x[1], reverse=True)
+    if len(sorted_families) < 2:
+        result['personalized'] = False
+        return result
+
+    top_1_family, top_1_score = sorted_families[0]
+    top_2_family, top_2_score = sorted_families[1]
+    gap = top_1_score - top_2_score
+
+    # Guard 3: confident prediction — no personalization
+    if top_1_score >= 0.5 and gap >= 0.05:
+        result['personalized'] = False
+        return result
+
+    # Apply tiebreaker
+    adj_1 = top_1_score + PRIOR_WEIGHT * snapshot.emotion_prior.get(top_1_family, 0.0)
+    adj_2 = top_2_score + PRIOR_WEIGHT * snapshot.emotion_prior.get(top_2_family, 0.0)
+
+    if adj_2 > adj_1:
+        # Ordering changed — swap winner
+        new_family = top_2_family
+        old_family = top_1_family
+
+        # Find best sub-emotion in new winning family from scores dict
+        scores = result.get('scores', {})
+        family_emotions = EMOTION_FAMILIES.get(new_family, [])
+        best_emotion = None
+        best_score = -1.0
+        for emo in family_emotions:
+            s = scores.get(emo, 0.0)
+            if s > best_score:
+                best_score = s
+                best_emotion = emo
+
+        if best_emotion:
+            result['dominant_emotion'] = best_emotion
+        result['family'] = new_family
+        result['confidence'] = adj_2
+
+        result['personalized'] = True
+        prior_winner = snapshot.emotion_prior.get(new_family, 0.0)
+        prior_loser = snapshot.emotion_prior.get(old_family, 0.0)
+        result['personalization_reason'] = (
+            f"profile_tiebreak: {new_family} prior {prior_winner:.2f} > "
+            f"{old_family} prior {prior_loser:.2f}"
+        )
+    else:
+        # Ordering unchanged — confirm original
+        result['personalized'] = True
+        result['personalization_reason'] = "profile_consulted: original classification confirmed"
+
+    return result
+
+
 class SentenceEncoderWrapper:
     """
     Wrapper for sentence-transformers providing semantic text embeddings.
