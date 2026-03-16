@@ -21,6 +21,8 @@ import torch.nn as nn
 import numpy as np
 import pickle
 import time
+import hashlib
+from functools import lru_cache
 from pathlib import Path
 
 # Optional: sentence-transformers for better text embeddings
@@ -167,11 +169,22 @@ class SentenceEncoderWrapper:
         self.model = SentenceTransformer(model_name, device=device)
         self.embedding_dim = self.model.get_sentence_embedding_dimension()
         self.device = device
+        self._embedding_cache = {}
+        self._cache_max_size = 512
 
     def encode(self, text: str) -> torch.Tensor:
-        """Encode text to embedding tensor."""
+        """Encode text to embedding tensor. Uses LRU cache to avoid repeat forward passes."""
+        cache_key = hashlib.md5(text.encode('utf-8')).hexdigest()
+        if cache_key in self._embedding_cache:
+            return self._embedding_cache[cache_key].clone()
         embedding = self.model.encode(text, convert_to_tensor=True)
-        return embedding.unsqueeze(0)  # (1, dim)
+        result = embedding.unsqueeze(0)  # (1, dim)
+        # Evict oldest if cache is full
+        if len(self._embedding_cache) >= self._cache_max_size:
+            oldest_key = next(iter(self._embedding_cache))
+            del self._embedding_cache[oldest_key]
+        self._embedding_cache[cache_key] = result
+        return result.clone()
 
     def encode_batch(self, texts: list) -> torch.Tensor:
         """Encode batch of texts."""
@@ -243,6 +256,10 @@ class GoEmotionsEncoder:
         # Combined: 768 (embedding) + 28 (emotion probs) = 796
         self.combined_dim = self.embedding_dim + self.num_go_labels
 
+        # LRU embedding cache — avoids repeat transformer forward passes
+        self._embedding_cache = {}
+        self._cache_max_size = 256
+
         # Build label index map
         self.go_label_names = [
             self.model.config.id2label[i] for i in range(self.num_go_labels)
@@ -258,7 +275,11 @@ class GoEmotionsEncoder:
                 self._go_to_quantara_idx.append(FusionHead.EMOTIONS.index('neutral'))
 
     def encode(self, text: str) -> torch.Tensor:
-        """Encode text to 768-dim RoBERTa embedding (CLS token hidden state)."""
+        """Encode text to 768-dim RoBERTa embedding (CLS token hidden state). LRU cached."""
+        cache_key = hashlib.md5(text.encode('utf-8')).hexdigest()
+        if cache_key in self._embedding_cache:
+            return self._embedding_cache[cache_key].clone()
+
         inputs = self.tokenizer(text, return_tensors='pt', truncation=True, max_length=512)
         inputs = {k: v.to(self.device) for k, v in inputs.items()}
 
@@ -267,7 +288,12 @@ class GoEmotionsEncoder:
             # CLS token from last hidden layer
             embedding = outputs.hidden_states[-1][:, 0, :]  # (1, 768)
 
-        return embedding
+        if len(self._embedding_cache) >= self._cache_max_size:
+            oldest_key = next(iter(self._embedding_cache))
+            del self._embedding_cache[oldest_key]
+        self._embedding_cache[cache_key] = embedding
+
+        return embedding.clone()
 
     def encode_batch(self, texts: list, batch_size: int = 32) -> torch.Tensor:
         """Encode batch of texts to embeddings."""
@@ -341,11 +367,15 @@ class GoEmotionsEncoder:
         return torch.cat(all_probs, dim=0)
 
     def encode_with_emotions(self, text: str) -> torch.Tensor:
-        """Combined encoding: 768-dim embedding + 28-dim emotion probs = 796-dim.
+        """Combined encoding: 768-dim embedding + 28-dim emotion probs = 796-dim. LRU cached.
 
         This gives the fusion head both semantic features AND pretrained
         emotion knowledge from GoEmotions.
         """
+        cache_key = 'emo_' + hashlib.md5(text.encode('utf-8')).hexdigest()
+        if cache_key in self._embedding_cache:
+            return self._embedding_cache[cache_key].clone()
+
         inputs = self.tokenizer(text, return_tensors='pt', truncation=True, max_length=512)
         inputs = {k: v.to(self.device) for k, v in inputs.items()}
 
@@ -355,7 +385,13 @@ class GoEmotionsEncoder:
             probs = torch.sigmoid(outputs.logits)  # (1, 28)
 
         combined = torch.cat([embedding, probs], dim=-1)  # (1, 796)
-        return combined
+
+        if len(self._embedding_cache) >= self._cache_max_size:
+            oldest_key = next(iter(self._embedding_cache))
+            del self._embedding_cache[oldest_key]
+        self._embedding_cache[cache_key] = combined
+
+        return combined.clone()
 
     def encode_with_emotions_batch(self, texts: list, batch_size: int = 32) -> torch.Tensor:
         """Batch combined encoding. Returns (N, 796) tensor."""
@@ -550,6 +586,9 @@ class FusionHead(nn.Module):
             nn.Dropout(dropout),
         )
 
+        # Dropout before classification heads (regularization)
+        self.head_dropout = nn.Dropout(dropout)
+
         # Stage 1: Family classifier (9-way)
         self.family_classifier = nn.Linear(hidden_dim // 2, num_families)
 
@@ -606,6 +645,7 @@ class FusionHead(nn.Module):
 
         fused = torch.cat(parts, dim=-1)
         shared_features = self.shared(fused)
+        shared_features = self.head_dropout(shared_features)
 
         emotion_logits = self.emotion_classifier(shared_features)
         family_logits = self.family_classifier(shared_features)

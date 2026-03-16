@@ -1019,32 +1019,38 @@ def create_app(model: EmotionGPTModel) -> Flask:
 
     @app.route('/api/emotion/emotions', methods=['GET'])
     def list_emotions():
-        """List supported emotions"""
-        return jsonify({
+        """List supported emotions — static data, cached for 24h"""
+        resp = jsonify({
             'emotions': model.EMOTIONS,
             'count': len(model.EMOTIONS),
             'families': _EMOTION_FAMILIES,
         })
+        resp.headers['Cache-Control'] = 'public, max-age=86400'
+        return resp
 
     @app.route('/api/emotion/family', methods=['GET'])
     def list_families():
-        """List all emotion families with their emotions"""
-        return jsonify({
+        """List all emotion families — static data, cached for 24h"""
+        resp = jsonify({
             'families': _EMOTION_FAMILIES,
             'count': len(_EMOTION_FAMILIES),
         })
+        resp.headers['Cache-Control'] = 'public, max-age=86400'
+        return resp
 
     @app.route('/api/emotion/family/<name>', methods=['GET'])
     def get_family(name):
-        """Get emotions in a specific family"""
+        """Get emotions in a specific family — static data, cached for 24h"""
         # Case-insensitive lookup
         for family_name, emotions in _EMOTION_FAMILIES.items():
             if family_name.lower() == name.lower():
-                return jsonify({
+                resp = jsonify({
                     'family': family_name,
                     'emotions': emotions,
                     'count': len(emotions),
                 })
+                resp.headers['Cache-Control'] = 'public, max-age=86400'
+                return resp
         return jsonify({'error': f'Family not found: {name}'}), 404
 
     @app.route('/api/emotion/generate', methods=['POST'])
