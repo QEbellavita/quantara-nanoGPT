@@ -1,6 +1,6 @@
 # Training TODO
 
-> Last updated: **2026-03-16 ~7:36am** — 4 active training jobs, 1 completed
+> Last updated: **2026-03-16 ~6:50pm** — 2 active training jobs, 5 completed
 
 ---
 
@@ -8,10 +8,8 @@
 
 | # | PID | Command | Started | Elapsed | MEM | Purpose | Status |
 |---|-----|---------|---------|---------|-----|---------|--------|
-| 1 | 23114 | `python train_emotion_classifier.py --use-sentence-transformer --external-data data/external_datasets/augmented_emotion_data.csv --epochs 20 --lr 0.0005` | Mar 16 ~7:05am | 31 min | 1.9% | Sentence-transformer + augmented data (69K rows) | **Running** |
-| 2 | 54628 | `python train_emotion_classifier.py --use-go-emotions --use-hf-datasets --epochs 20 --batch-size 64 --device cpu` | Mar 15 ~6pm | **13.5 hrs** | 3.3% | GoEmotions + HuggingFace datasets (211K+ rows) | **Running** |
-| 3 | 72566 | `python3 train.py config/train_quantara_emotion_medium.py` | Mar 15 ~2pm | **17.7 hrs** | 24.2% | nanoGPT medium emotion model (6L/6H/384d, 5K iters) | **Running** |
-| 5 | 24303 | `python train_emotion_classifier.py --use-sentence-transformer --epochs 20` | Mar 16 ~7:18am | 17 min | 1.5% | Base classifier with pose features (FusionHead 416-dim) | **Running** |
+| 6 | 2101 | `python3 -u train.py config/train_quantara_emotion_medium.py --init_from=resume` | Mar 16 ~3:36pm | ~3h 14m | 9.8% | nanoGPT medium emotion model (6L/6H/384d, 5K iters) — **retrain on updated data** | **Running** |
+| 7 | — | `python train_emotion_classifier.py --use-sentence-transformer --use-go-emotions --use-hf-datasets --external-data ...all_combined... --epochs 30 --lr 0.0003 --dropout 0.4` | Mar 16 ~6:45pm | fresh | — | **Full combined retrain with regularization fixes** (head dropout, cosine LR decay, embedding noise, stratified 80/20 split, patience 5) | **Running** |
 
 ### How to Check Status
 
@@ -20,30 +18,30 @@
 ps aux | grep -E "train|python" | grep -v grep
 
 # Check specific PID
-ps -p 23114 -o pid,etime,%cpu,%mem,command
-ps -p 54628 -o pid,etime,%cpu,%mem,command
-ps -p 72566 -o pid,etime,%cpu,%mem,command
+ps -p 2101 -o pid,etime,%cpu,%mem,command
 
 # Check nanoGPT checkpoint progress (updates every 500 iters)
 ls -lh out-quantara-emotion-medium/ckpt.pt
-# Current: 344M, last updated Mar 15 5:20am
+# Current: 344M, last updated Mar 16 3:50pm
 
 # Check emotion classifier checkpoint
 ls -lh checkpoints/emotion_fusion_head.pt
-# Current: 271K, last updated Mar 16 2:48am
+# Current: 265K, last updated Mar 16 2:48am
 ```
+
+### Queued
+
+None — all queued jobs have been started.
 
 ### Completed
 
 | PID | Command | Result | Checkpoint |
 |-----|---------|--------|------------|
 | 24300 | `python train_calibration_dreamer.py --epochs 300` | **HRV MAE: 31.2 ms, EDA MAE: 1.6 µS** — 8125 samples (38 subjects), 300 epochs | `checkpoints/ruview_calibration.pt` (5.4K) |
-
-### Dead
-
-| PID | Command | Status | Checkpoint? |
-|-----|---------|--------|-------------|
-| 93208 | `python train_emotion_classifier.py --use-sentence-transformer --external-data data/external_datasets/augmented_emotion_data.csv --epochs 20 --lr 0.0005` | **Dead** — replaced by PID 23114 | Yes — `checkpoints/emotion_fusion_head.pt` (271K) |
+| 72566 | `python3 train.py config/train_quantara_emotion_medium.py` | Completed ~Mar 15 — nanoGPT medium (5K iters) | `out-quantara-emotion-medium/ckpt.pt` (344M) |
+| 23114 | `python train_emotion_classifier.py --use-sentence-transformer --external-data ... --epochs 20` | Completed/finished | `checkpoints/emotion_fusion_head.pt` |
+| 54628 | `python train_emotion_classifier.py --use-go-emotions --use-hf-datasets --epochs 20` | Completed/finished (~13.5+ hrs) | — |
+| 24303 | `python train_emotion_classifier.py --use-sentence-transformer --epochs 20` | Completed/finished | — |
 
 ---
 
@@ -159,6 +157,44 @@ python calibration_collector.py retrain --data-dir calibration_data/
 
 ---
 
+## Benchmark Results (Mar 16)
+
+### Before fixes (checkpoint from job #5, sentence-transformer)
+
+| Metric | Training | Benchmark |
+|--------|----------|-----------|
+| Emotion (32-cls) | 95.4% | 26.1% |
+| Family (9-cls) | 99.2% | 31.6% |
+
+**Diagnosis:** Severe overfitting + label mismatch (model outputs 32 emotions, benchmark expects 6).
+
+### After label mapping fix (same checkpoint, updated benchmark)
+
+| Metric | Value |
+|--------|-------|
+| Raw emotion (32-cls) | 26.1% |
+| **Mapped accuracy (6-cls)** | **46.3%** |
+| Family (9-cls) | 31.6% |
+| Edge case mapped family (6-cls) | 44.0% |
+
+### Regularization fixes applied (Job #7 will use these)
+
+- Head dropout added to FusionHead classification heads
+- Cosine annealing LR scheduler (lr → 1e-5 over epochs)
+- Weight decay reduced 0.01 → 1e-4
+- Gaussian noise (5%) on text embeddings during training
+- Stratified 80/20 train/val split (was random 90/10)
+- Patience increased 3 → 5
+
+### After Job #7 completes
+
+Re-run benchmark:
+```bash
+python benchmark_emotion.py --checkpoint checkpoints/emotion_fusion_head.pt
+```
+
+---
+
 ## Commit & Deploy After Training
 
 ```bash
@@ -206,7 +242,7 @@ git push origin master
 | **text_emotion** | 13 | 40K | 35.7% | 0.307 | `autoresearch_text_emotion_voting_embeddings_20260315_020705.pkl` |
 
 All models saved to: `/Users/bel/Quantara-Frontend/models/`
-Uploading to HuggingFace: `belindaswitzer/quantara-emotion-models` (PID 23490, in progress)
+HuggingFace upload: `belindaswitzer/quantara-emotion-models` (PID 23490 — **dead**, needs re-run)
 
 ### Autoresearch Restart Commands
 

@@ -884,7 +884,7 @@ def _reclassify_for_training(data):
     return data + extra
 
 
-def extract_embeddings_go_emotions(encoder, texts, combined=True, batch_size=32):
+def extract_embeddings_go_emotions(encoder, texts, combined=True, batch_size=16):
     """Extract embeddings using GoEmotions RoBERTa model.
 
     Args:
@@ -989,8 +989,11 @@ def train(args):
             print("  [!] transformers not installed, falling back to sentence-transformers")
             use_go_emotions = False
         else:
-            print(f"\n  Loading GoEmotions ({args.go_emotions_model})...")
-            go_encoder = GoEmotionsEncoder(args.go_emotions_model, device=device)
+            # Always load GoEmotions encoder on CPU — RoBERTa is too large for MPS
+            # with 500K+ texts. The small FusionHead trains on the target device.
+            go_device = 'cpu'
+            print(f"\n  Loading GoEmotions ({args.go_emotions_model}) on {go_device}...")
+            go_encoder = GoEmotionsEncoder(args.go_emotions_model, device=go_device)
             if go_combined:
                 n_embd = go_encoder.combined_dim  # 796 = 768 + 28
                 print(f"  Combined dim: {n_embd} (768 embedding + 28 emotion probs)")
@@ -1094,16 +1097,24 @@ def train(args):
     data = [(t, e) for t, e in data if e in EMOTION_TO_IDX]
     print(f"  Usable samples (known emotions): {len(data)}")
 
-    # Shuffle and split
+    # Stratified shuffle and split (ensures each emotion is represented in val)
     random.seed(42)
-    random.shuffle(data)
-
-    split_idx = int(len(data) * (1 - args.val_split))
-    train_data = data[:split_idx]
-    val_data = data[split_idx:]
+    from collections import defaultdict
+    by_emotion = defaultdict(list)
+    for t, e in data:
+        by_emotion[e].append((t, e))
+    train_data, val_data = [], []
+    for emotion, samples in by_emotion.items():
+        random.shuffle(samples)
+        split_idx = int(len(samples) * (1 - args.val_split))
+        train_data.extend(samples[:split_idx])
+        val_data.extend(samples[split_idx:])
+    random.shuffle(train_data)
+    random.shuffle(val_data)
 
     print(f"  Train samples: {len(train_data)}")
     print(f"  Val samples: {len(val_data)}")
+    print(f"  Emotion classes in val: {len(set(e for _, e in val_data))}/32")
 
     # Extract embeddings
     print("\n  Extracting text embeddings...")
@@ -1209,7 +1220,10 @@ def train(args):
     # Optimizer
     params = (list(bio_encoder.parameters()) + list(pose_encoder.parameters())
               + list(fusion_head.parameters()))
-    optimizer = torch.optim.AdamW(params, lr=args.lr, weight_decay=0.01)
+    optimizer = torch.optim.AdamW(params, lr=args.lr, weight_decay=1e-4)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=args.epochs, eta_min=1e-5
+    )
 
     # Compute class weights from training data to handle imbalanced emotions
     emotion_label_list = train_dataset.emotion_labels.numpy()
@@ -1274,6 +1288,9 @@ def train(args):
             pose_feat = pose_feat.to(device)
             emotion_labels = emotion_labels.to(device)
             family_labels = family_labels.to(device)
+
+            # Embedding-level augmentation: Gaussian noise (regularization)
+            text_emb = text_emb + torch.randn_like(text_emb) * 0.05
 
             optimizer.zero_grad()
 
@@ -1394,6 +1411,8 @@ def train(args):
                 print(f"\n  Early stopping at epoch {epoch+1}")
                 break
 
+        scheduler.step()
+
     print("\n" + "=" * 60)
     print(f"  Training complete! Best val_emotion_acc: {best_val_acc:.4f}")
     print(f"  Checkpoint saved to: checkpoints/emotion_fusion_head.pt")
@@ -1441,8 +1460,8 @@ if __name__ == '__main__':
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--hidden-dim', type=int, default=128)
     parser.add_argument('--dropout', type=float, default=0.3)
-    parser.add_argument('--val-split', type=float, default=0.1)
-    parser.add_argument('--patience', type=int, default=3)
+    parser.add_argument('--val-split', type=float, default=0.2)
+    parser.add_argument('--patience', type=int, default=5)
     parser.add_argument('--device', default='auto')
     # Knowledge distillation from GoEmotions teacher
     parser.add_argument('--distillation', action='store_true',

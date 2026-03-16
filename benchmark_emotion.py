@@ -31,6 +31,41 @@ from emotion_classifier import (
     family_for_emotion,
 )
 
+# ─── Mapping from 32 model emotions → 6 dair-ai/emotion labels ──────────────
+# dair-ai/emotion only has: sadness, joy, love, anger, fear, surprise
+# Our model has 32 sub-emotions. This maps each back to the closest base label.
+
+EMOTION_TO_BASE = {
+    # Joy family → joy
+    'joy': 'joy', 'excitement': 'joy', 'enthusiasm': 'joy', 'fun': 'joy',
+    'gratitude': 'joy', 'pride': 'joy',
+    # Sadness family → sadness
+    'sadness': 'sadness', 'grief': 'sadness', 'boredom': 'sadness',
+    'nostalgia': 'sadness',
+    # Anger family → anger
+    'anger': 'anger', 'frustration': 'anger', 'hate': 'anger',
+    'contempt': 'anger', 'disgust': 'anger', 'jealousy': 'anger',
+    # Fear family → fear
+    'fear': 'fear', 'anxiety': 'fear', 'worry': 'fear',
+    'overwhelmed': 'fear', 'stressed': 'fear',
+    # Love family → love
+    'love': 'love', 'compassion': 'love',
+    # Calm family → joy (closest positive valence in 6-class)
+    'calm': 'joy', 'relief': 'joy', 'mindfulness': 'joy',
+    'resilience': 'joy', 'hope': 'joy',
+    # Self-Conscious → sadness (closest negative valence in 6-class)
+    'guilt': 'sadness', 'shame': 'sadness',
+    # Direct mappings
+    'surprise': 'surprise',
+    'neutral': 'surprise',  # neutral has no match; surprise is least wrong
+}
+
+FAMILY_TO_BASE = {
+    'Joy': 'joy', 'Sadness': 'sadness', 'Anger': 'anger',
+    'Fear': 'fear', 'Love': 'love', 'Calm': 'joy',
+    'Self-Conscious': 'sadness', 'Surprise': 'surprise', 'Neutral': 'surprise',
+}
+
 # ─── Edge-case test suite ────────────────────────────────────────────────────
 
 EDGE_CASES = [
@@ -78,6 +113,7 @@ def run_edge_cases(analyzer, verbose=True):
     """Run edge case tests and report accuracy."""
     emotion_correct = 0
     family_correct = 0
+    mapped_family_correct = 0
     total = len(EDGE_CASES)
     results = []
 
@@ -91,6 +127,12 @@ def run_edge_cases(analyzer, verbose=True):
         emotion_correct += int(e_match)
         family_correct += int(f_match)
 
+        # Mapped family: did the model at least get the right family?
+        predicted_base_family = FAMILY_TO_BASE.get(predicted_family, predicted_family)
+        expected_base_family = FAMILY_TO_BASE.get(expected_family, expected_family)
+        mf_match = predicted_base_family == expected_base_family
+        mapped_family_correct += int(mf_match)
+
         results.append({
             'text': text[:50],
             'expected': f"{expected_family}/{expected_emotion}",
@@ -101,16 +143,18 @@ def run_edge_cases(analyzer, verbose=True):
         })
 
         if verbose:
-            status = "OK" if e_match else ("~" if f_match else "X")
+            status = "OK" if e_match else ("~" if f_match else ("m" if mf_match else "X"))
             print(f"  [{status}] {description:30s} | expected={expected_emotion:15s} | "
                   f"got={predicted_emotion:15s} ({result['confidence']:.2f})")
 
     emotion_acc = emotion_correct / total
     family_acc = family_correct / total
+    mapped_family_acc = mapped_family_correct / total
 
     print(f"\n  Edge Case Results:")
-    print(f"    Emotion accuracy: {emotion_correct}/{total} ({emotion_acc:.1%})")
-    print(f"    Family accuracy:  {family_correct}/{total} ({family_acc:.1%})")
+    print(f"    Emotion accuracy:       {emotion_correct}/{total} ({emotion_acc:.1%})")
+    print(f"    Family accuracy (9-cls): {family_correct}/{total} ({family_acc:.1%})")
+    print(f"    Mapped family (6-cls):   {mapped_family_correct}/{total} ({mapped_family_acc:.1%})")
 
     return emotion_acc, family_acc, results
 
@@ -136,6 +180,7 @@ def run_validation_set(analyzer, max_samples=2000, verbose=True):
 
     emotion_correct = 0
     family_correct = 0
+    mapped_correct = 0
     total = 0
     start = time.time()
 
@@ -148,27 +193,37 @@ def run_validation_set(analyzer, max_samples=2000, verbose=True):
         predicted = result['dominant_emotion']
         predicted_family = result['family']
 
+        # Raw: exact match (32-class predicted vs 6-class expected)
         if predicted == expected:
             emotion_correct += 1
         if predicted_family == expected_family:
             family_correct += 1
+
+        # Mapped: collapse 32-class prediction to 6-class for fair comparison
+        predicted_base = EMOTION_TO_BASE.get(predicted, predicted)
+        if predicted_base == expected:
+            mapped_correct += 1
+
         total += 1
 
         if verbose and (i + 1) % 200 == 0:
             elapsed = time.time() - start
             rate = (i + 1) / elapsed
             print(f"    {i+1}/{len(samples)} ({rate:.1f} samples/sec) "
-                  f"emotion={emotion_correct/total:.1%} family={family_correct/total:.1%}")
+                  f"raw={emotion_correct/total:.1%} mapped={mapped_correct/total:.1%} "
+                  f"family={family_correct/total:.1%}")
 
     emotion_acc = emotion_correct / total
     family_acc = family_correct / total
+    mapped_acc = mapped_correct / total
     elapsed = time.time() - start
 
     print(f"\n  Validation Set Results ({total} samples, {elapsed:.1f}s):")
-    print(f"    Emotion accuracy: {emotion_correct}/{total} ({emotion_acc:.1%})")
-    print(f"    Family accuracy:  {family_correct}/{total} ({family_acc:.1%})")
+    print(f"    Raw emotion accuracy:    {emotion_correct}/{total} ({emotion_acc:.1%})")
+    print(f"    Mapped accuracy (6-cls): {mapped_correct}/{total} ({mapped_acc:.1%})")
+    print(f"    Family accuracy:         {family_correct}/{total} ({family_acc:.1%})")
 
-    return emotion_acc, family_acc
+    return emotion_acc, family_acc, mapped_acc
 
 
 def main():
@@ -221,11 +276,12 @@ def main():
     edge_emotion, edge_family, _ = run_edge_cases(analyzer, verbose=not args.quiet)
 
     # Validation set
+    val_mapped = None
     if not args.skip_val:
         print(f"\n{'─' * 70}")
         print("  VALIDATION SET (dair-ai/emotion)")
         print(f"{'─' * 70}")
-        val_emotion, val_family = run_validation_set(
+        val_emotion, val_family, val_mapped = run_validation_set(
             analyzer, max_samples=args.val_samples, verbose=not args.quiet
         )
 
@@ -235,7 +291,8 @@ def main():
     print(f"{'=' * 70}")
     print(f"  Edge cases:  emotion={edge_emotion:.1%}  family={edge_family:.1%}")
     if not args.skip_val and val_emotion is not None:
-        print(f"  Validation:  emotion={val_emotion:.1%}  family={val_family:.1%}")
+        print(f"  Validation (raw 32-cls):   emotion={val_emotion:.1%}  family={val_family:.1%}")
+        print(f"  Validation (mapped 6-cls): {val_mapped:.1%}")
     print(f"{'=' * 70}")
 
 
