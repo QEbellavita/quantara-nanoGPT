@@ -60,6 +60,11 @@ class ProfileEventBus:
         self._subscribers: Dict[str, dict] = {}
         self._lock = threading.Lock()
         self._running = True
+        self._metrics = None
+
+    def set_metrics(self, collector) -> None:
+        """Wire metrics collector for observability."""
+        self._metrics = collector
 
     # ------------------------------------------------------------------
     # Public API
@@ -114,6 +119,9 @@ class ProfileEventBus:
         with self._lock:
             self._subscribers[sub_id] = entry
 
+        if self._metrics:
+            self._metrics.set_gauge('bus.subscriber_count', len(self._subscribers))
+
         logger.debug(
             "ProfileEventBus: subscribed id=%s pattern=%r mode=%s",
             sub_id,
@@ -136,6 +144,9 @@ class ProfileEventBus:
         if entry is None:
             logger.debug("ProfileEventBus: unsubscribe called for unknown id=%s", sub_id)
             return
+
+        if self._metrics:
+            self._metrics.set_gauge('bus.subscriber_count', len(self._subscribers))
 
         if entry["mode"] == "async" and entry["queue"] is not None:
             entry["queue"].put(self._POISON_PILL)
@@ -161,6 +172,9 @@ class ProfileEventBus:
             logger.warning("ProfileEventBus: publish called after shutdown, ignoring.")
             return
 
+        if self._metrics:
+            self._metrics.increment('bus.publish_count')
+
         with self._lock:
             snapshot = list(self._subscribers.values())
 
@@ -176,6 +190,8 @@ class ProfileEventBus:
                         "ProfileEventBus: sync subscriber raised an exception "
                         "(pattern=%r, topic=%r)", entry["pattern"], topic
                     )
+                    if self._metrics:
+                        self._metrics.increment('bus.publish_errors')
             else:
                 if entry["queue"] is not None:
                     entry["queue"].put((topic, payload))
