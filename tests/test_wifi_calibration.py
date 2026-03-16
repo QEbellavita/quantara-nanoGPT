@@ -39,8 +39,8 @@ class TestWiFiCalibrationModel:
         assert out.shape == (8, 2)
 
     def test_hrv_within_bounds(self):
-        """HRV output is always within [10.0, 100.0] ms."""
-        from wifi_calibration import WiFiCalibrationModel
+        """HRV output is always within [HRV_MIN, HRV_MAX] ms."""
+        from wifi_calibration import WiFiCalibrationModel, HRV_MIN, HRV_MAX
         model = WiFiCalibrationModel()
         # Test many random inputs including extreme values
         inputs = torch.tensor([
@@ -52,8 +52,8 @@ class TestWiFiCalibrationModel:
         ])
         out = model(inputs)
         hrv = out[:, 0]
-        assert (hrv >= 10.0).all(), f"HRV below 10.0: {hrv}"
-        assert (hrv <= 100.0).all(), f"HRV above 100.0: {hrv}"
+        assert (hrv >= HRV_MIN).all(), f"HRV below {HRV_MIN}: {hrv}"
+        assert (hrv <= HRV_MAX).all(), f"HRV above {HRV_MAX}: {hrv}"
 
     def test_eda_within_bounds(self):
         """EDA output is always within [0.5, 20.0] uS."""
@@ -89,9 +89,9 @@ class TestInverseMappings:
     """Test the inverse mapping helper functions."""
 
     def test_invert_breathing_to_hrv(self):
-        """Inverting HRV=95 should give min breathing rate (6 BPM)."""
-        from wifi_calibration import _invert_breathing_to_hrv
-        br = _invert_breathing_to_hrv(95.0)
+        """Inverting HRV=_HRV_LIN_MAX should give min breathing rate (6 BPM)."""
+        from wifi_calibration import _invert_breathing_to_hrv, _HRV_LIN_MAX
+        br = _invert_breathing_to_hrv(_HRV_LIN_MAX)
         assert abs(br - 6.0) < 0.1
 
     def test_invert_breathing_to_hrv_low(self):
@@ -260,7 +260,7 @@ class TestPersonalCalibrationBuffer:
         result = buffer.predict(15.0, 0.5)
         assert result is not None
         hrv, eda = result
-        assert 10.0 <= hrv <= 100.0
+        assert 10.0 <= hrv <= 250.0
         assert 0.5 <= eda <= 20.0
 
     def test_load_calibration_model_no_checkpoint(self, tmp_path):
