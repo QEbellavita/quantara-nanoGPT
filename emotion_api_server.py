@@ -78,6 +78,8 @@ try:
 except ImportError:
     HAS_MULTIMODAL = False
 
+from emotion_gpt import EmotionGPT
+
 from metrics_collector import MetricsCollector
 
 try:
@@ -968,6 +970,21 @@ def create_app(model: EmotionGPTModel) -> Flask:
         profile_engine._event_bus.set_metrics(metrics_collector)
     if profile_engine and profile_engine._ecosystem_connector:
         profile_engine._ecosystem_connector.set_metrics(metrics_collector)
+
+    # Initialize EmotionGPT coordinator
+    emotion_gpt = None
+    try:
+        emotion_gpt = EmotionGPT(
+            analyzer=model,
+            transition_tracker=transition_tracker,
+            auto_retrain_manager=auto_retrain_manager if 'auto_retrain_manager' in dir() else None,
+            profile_engine=profile_engine,
+            metrics=metrics_collector,
+            bus=profile_engine._event_bus if profile_engine and profile_engine._event_bus else None,
+        )
+        print("✓ EmotionGPT coordinator initialized")
+    except Exception as e:
+        print(f"⚠ EmotionGPT coordinator failed: {e}")
 
     def require_model():
         """Check if model is loaded, return error response if not"""

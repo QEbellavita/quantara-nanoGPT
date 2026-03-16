@@ -10,6 +10,7 @@ Connected to:
 
 import sys
 import os
+import time
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -251,3 +252,125 @@ class TestTimerLifecycle:
             bus.publish.assert_not_called()
         finally:
             gpt.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# TestAnalyzeWithContext
+# ---------------------------------------------------------------------------
+
+class TestAnalyzeWithContext:
+    """Test the unified analysis pipeline."""
+
+    def test_basic_classification(self):
+        from emotion_gpt import EmotionGPT
+        analyzer = MagicMock()
+        analyzer.analyze.return_value = {
+            'dominant_emotion': 'joy', 'family': 'Joy',
+            'confidence': 0.9, 'is_fallback': False,
+        }
+        gpt = EmotionGPT(analyzer)
+        result = gpt.analyze_with_context("I feel great")
+        analyzer.analyze.assert_called_once_with(
+            "I feel great", None, pose=None, return_embedding=False,
+        )
+        assert result['dominant_emotion'] == 'joy'
+        gpt.shutdown()
+
+    def test_forwards_pose_and_embedding(self):
+        from emotion_gpt import EmotionGPT
+        analyzer = MagicMock()
+        analyzer.analyze.return_value = {'dominant_emotion': 'calm', 'family': 'Calm', 'confidence': 0.7}
+        gpt = EmotionGPT(analyzer)
+        gpt.analyze_with_context("test", pose={'head': 0.5}, return_embedding=True)
+        analyzer.analyze.assert_called_once_with(
+            "test", None, pose={'head': 0.5}, return_embedding=True,
+        )
+        gpt.shutdown()
+
+    def test_records_transition(self):
+        from emotion_gpt import EmotionGPT
+        analyzer = MagicMock()
+        analyzer.analyze.return_value = {
+            'dominant_emotion': 'sadness', 'family': 'Sadness', 'confidence': 0.8,
+        }
+        tracker = MagicMock()
+        gpt = EmotionGPT(analyzer, transition_tracker=tracker)
+        gpt.analyze_with_context("I feel sad", user_id='u1')
+        tracker.record.assert_called_once_with(
+            user_id='u1', emotion='sadness', family='Sadness', confidence=0.8,
+        )
+        gpt.shutdown()
+
+    def test_skips_transition_without_user_id(self):
+        from emotion_gpt import EmotionGPT
+        analyzer = MagicMock()
+        analyzer.analyze.return_value = {'dominant_emotion': 'joy', 'family': 'Joy', 'confidence': 0.9}
+        tracker = MagicMock()
+        gpt = EmotionGPT(analyzer, transition_tracker=tracker)
+        gpt.analyze_with_context("I feel great")
+        tracker.record.assert_not_called()
+        gpt.shutdown()
+
+    def test_skips_personalization_without_profile_engine(self):
+        from emotion_gpt import EmotionGPT
+        analyzer = MagicMock()
+        analyzer.analyze.return_value = {
+            'dominant_emotion': 'joy', 'family': 'Joy', 'confidence': 0.9,
+            'family_scores': {'Joy': 0.9},
+        }
+        gpt = EmotionGPT(analyzer)
+        result = gpt.analyze_with_context("test", user_id='u1')
+        assert 'personalized' not in result
+        gpt.shutdown()
+
+    def test_personalization_with_profile_engine(self):
+        from emotion_gpt import EmotionGPT
+        from user_profile_engine import ProfileSnapshot
+        analyzer = MagicMock()
+        analyzer.analyze.return_value = {
+            'dominant_emotion': 'joy', 'family': 'Joy', 'confidence': 0.4,
+            'family_scores': {'Joy': 0.4, 'Sadness': 0.38},
+            'scores': {'joy': 0.3},
+        }
+        profile_engine = MagicMock()
+        profile_engine.get_profile_snapshot.return_value = ProfileSnapshot(
+            user_id='u1', evolution_stage=2, overall_confidence=0.5,
+            emotion_prior={'Joy': 0.5, 'Sadness': 0.5},
+            dominant_family='Joy', event_count=50,
+            family_counts={'Joy': 25, 'Sadness': 25},
+            last_updated=time.time(),
+        )
+        gpt = EmotionGPT(analyzer, profile_engine=profile_engine)
+        result = gpt.analyze_with_context("test", user_id='u1')
+        assert 'personalized' in result
+        gpt.shutdown()
+
+    def test_include_profile_enrichment(self):
+        from emotion_gpt import EmotionGPT
+        from user_profile_engine import ProfileSnapshot
+        analyzer = MagicMock()
+        analyzer.analyze.return_value = {
+            'dominant_emotion': 'joy', 'family': 'Joy', 'confidence': 0.9,
+        }
+        profile_engine = MagicMock()
+        profile_engine.get_profile_snapshot.return_value = ProfileSnapshot(
+            user_id='u1', evolution_stage=3, overall_confidence=0.7,
+            emotion_prior={'Joy': 0.6}, dominant_family='Joy',
+            event_count=100, family_counts={'Joy': 60},
+            last_updated=time.time(),
+        )
+        gpt = EmotionGPT(analyzer, profile_engine=profile_engine)
+        result = gpt.analyze_with_context("test", user_id='u1', include_profile=True)
+        assert 'profile_context' in result
+        assert result['profile_context']['evolution_stage'] == 3
+        gpt.shutdown()
+
+    def test_graceful_degradation_analyzer_only(self):
+        from emotion_gpt import EmotionGPT
+        analyzer = MagicMock()
+        analyzer.analyze.return_value = {'dominant_emotion': 'neutral', 'family': 'Neutral', 'confidence': 0.5}
+        gpt = EmotionGPT(analyzer)
+        result = gpt.analyze_with_context("test", user_id='u1', include_profile=True)
+        assert result['dominant_emotion'] == 'neutral'
+        assert 'profile_context' not in result
+        gpt.shutdown()
