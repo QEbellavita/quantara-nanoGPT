@@ -84,3 +84,106 @@ class TestDominantEmotionKeyFix:
         result = {'emotion': 'joy', 'family': 'Joy', 'confidence': 1.0}
         emotion = result.get('dominant_emotion', result.get('emotion', 'neutral'))
         assert emotion == 'joy'
+
+
+class TestEndToEndPersonalization:
+    """Integration test: log events -> build snapshot -> personalize analysis."""
+
+    @pytest.fixture
+    def engine(self, tmp_path):
+        from user_profile_engine import UserProfileEngine
+        return UserProfileEngine(db_path=str(tmp_path / 'e2e.db'))
+
+    def test_full_loop(self, engine):
+        """Events build prior, prior influences ambiguous classification."""
+        from emotion_classifier import apply_profile_personalization
+
+        for _ in range(12):
+            engine.log_event('u1', 'emotional', 'emotion_classified', {
+                'emotion': 'anxiety', 'family': 'Fear', 'confidence': 0.6,
+            })
+        for _ in range(3):
+            engine.log_event('u1', 'emotional', 'emotion_classified', {
+                'emotion': 'sadness', 'family': 'Sadness', 'confidence': 0.5,
+            })
+
+        snap = engine.get_profile_snapshot('u1')
+        assert snap is not None
+        assert snap.event_count == 15
+        assert snap.dominant_family == 'Fear'
+        assert snap.emotion_prior['Fear'] > 0.7
+
+        result = {
+            'dominant_emotion': 'sadness', 'family': 'Sadness', 'confidence': 0.31,
+            'family_scores': {
+                'Sadness': 0.31, 'Fear': 0.29, 'Joy': 0.15,
+                'Anger': 0.10, 'Calm': 0.05, 'Love': 0.04,
+                'Self-Conscious': 0.03, 'Surprise': 0.02, 'Neutral': 0.01,
+            },
+            'scores': {
+                'sadness': 0.15, 'grief': 0.10, 'boredom': 0.06,
+                'fear': 0.14, 'anxiety': 0.12, 'worry': 0.03,
+            },
+        }
+
+        out = apply_profile_personalization(result, snap)
+        assert out['personalized'] is True
+        assert out['family'] == 'Fear'
+        assert 'profile_tiebreak' in out['personalization_reason']
+        assert out['dominant_emotion'] in ['fear', 'anxiety', 'worry', 'overwhelmed', 'stressed']
+
+    def test_confident_prediction_unaffected(self, engine):
+        """Even with strong prior, confident predictions are not changed."""
+        from emotion_classifier import apply_profile_personalization
+
+        for _ in range(20):
+            engine.log_event('u1', 'emotional', 'emotion_classified', {
+                'emotion': 'anxiety', 'family': 'Fear', 'confidence': 0.8,
+            })
+
+        snap = engine.get_profile_snapshot('u1')
+
+        result = {
+            'dominant_emotion': 'joy', 'family': 'Joy', 'confidence': 0.85,
+            'family_scores': {
+                'Joy': 0.85, 'Fear': 0.05, 'Sadness': 0.03,
+                'Anger': 0.02, 'Calm': 0.02, 'Love': 0.01,
+                'Self-Conscious': 0.01, 'Surprise': 0.005, 'Neutral': 0.005,
+            },
+            'scores': {'joy': 0.85},
+        }
+
+        out = apply_profile_personalization(result, snap)
+        assert out['personalized'] is False
+        assert out['family'] == 'Joy'
+        assert out['dominant_emotion'] == 'joy'
+
+    def test_restart_then_personalize(self, engine):
+        """After simulated restart, lazy rebuild enables personalization."""
+        from emotion_classifier import apply_profile_personalization
+
+        for _ in range(15):
+            engine.log_event('u1', 'emotional', 'emotion_classified', {
+                'emotion': 'anger', 'family': 'Anger', 'confidence': 0.7,
+            })
+
+        with engine._snapshot_lock:
+            engine._snapshots.clear()
+
+        snap = engine.get_profile_snapshot('u1')
+        assert snap is not None
+        assert snap.dominant_family == 'Anger'
+
+        result = {
+            'dominant_emotion': 'joy', 'family': 'Joy', 'confidence': 0.30,
+            'family_scores': {
+                'Joy': 0.30, 'Anger': 0.29, 'Sadness': 0.15,
+                'Fear': 0.10, 'Calm': 0.05, 'Love': 0.04,
+                'Self-Conscious': 0.03, 'Surprise': 0.02, 'Neutral': 0.02,
+            },
+            'scores': {'joy': 0.20, 'anger': 0.18, 'frustration': 0.11},
+        }
+
+        out = apply_profile_personalization(result, snap)
+        assert out['personalized'] is True
+        assert out['family'] == 'Anger'
