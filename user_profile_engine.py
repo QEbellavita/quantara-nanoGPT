@@ -76,6 +76,7 @@ class UserProfileEngine:
         self._ecosystem_connector = None
         self._snapshots: Dict[str, 'ProfileSnapshot'] = {}
         self._snapshot_lock = threading.Lock()
+        self._metrics = None
 
     # ─── Event Ingestion ─────────────────────────────────────────────────
 
@@ -119,6 +120,8 @@ class UserProfileEngine:
                 source=source,
                 confidence=confidence if confidence is not None else 1.0,
             )
+            if self._metrics:
+                self._metrics.increment('profile.events_logged')
             # Update in-memory snapshot for personalization
             if domain == 'emotional' and event_type == 'emotion_classified':
                 family = (payload or {}).get('family')
@@ -141,6 +144,8 @@ class UserProfileEngine:
                 snap.emotion_prior = {f: c / total for f, c in snap.family_counts.items()}
                 snap.dominant_family = max(snap.family_counts, key=snap.family_counts.get)
                 snap.last_updated = time.time()
+                if self._metrics:
+                    self._metrics.set_gauge('profile.active_snapshots', len(self._snapshots))
                 return
 
         # Slow path: create new snapshot (outside lock)
@@ -166,6 +171,8 @@ class UserProfileEngine:
                 last_updated=time.time(),
             )
             self._snapshots[user_id] = snap
+            if self._metrics:
+                self._metrics.set_gauge('profile.active_snapshots', len(self._snapshots))
 
     def get_profile_snapshot(self, user_id: str) -> Optional['ProfileSnapshot']:
         """Return the cached profile snapshot, rebuilding from DB if needed.
@@ -175,6 +182,8 @@ class UserProfileEngine:
         with self._snapshot_lock:
             snap = self._snapshots.get(user_id)
             if snap is not None:
+                if self._metrics:
+                    self._metrics.increment('profile.cache_hits')
                 return snap
 
         # Rebuild from DB outside the lock
@@ -212,6 +221,8 @@ class UserProfileEngine:
         with self._snapshot_lock:
             if user_id not in self._snapshots:
                 self._snapshots[user_id] = snap
+                if self._metrics:
+                    self._metrics.increment('profile.cache_rebuilds')
             return self._snapshots[user_id]
 
     # ─── Core Processing ─────────────────────────────────────────────────
@@ -462,6 +473,10 @@ class UserProfileEngine:
             )
 
     # ─── Event Bus Integration ───────────────────────────────────────────
+
+    def set_metrics(self, collector) -> None:
+        """Wire metrics collector for observability."""
+        self._metrics = collector
 
     def set_event_bus(self, bus, connector=None):
         """Wire the event bus for real-time intelligence and alerts."""
