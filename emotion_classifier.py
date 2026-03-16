@@ -1129,6 +1129,13 @@ class MultimodalEmotionAnalyzer:
             )
 
         emotion_probs_np = emotion_probs.squeeze(0).cpu().numpy()
+        family_probs_np = family_probs.squeeze(0).cpu().numpy()
+
+        # Build family scores dict (softmax probs, sum to 1.0)
+        family_scores = {
+            FAMILY_NAMES[i]: float(family_probs_np[i])
+            for i in range(len(FAMILY_NAMES))
+        }
 
         # Build scores dict
         scores = {
@@ -1144,6 +1151,7 @@ class MultimodalEmotionAnalyzer:
             'confidence': classification['confidence'],
             'is_fallback': classification['is_fallback'],
             'scores': scores,
+            'family_scores': family_scores,
             'biometric_contribution': biometric_contribution,
             'latency_ms': round(latency_ms, 2),
             'status': 'success'
